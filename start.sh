@@ -4,6 +4,21 @@ set -e
 export DISPLAY=:99
 
 Xvfb :99 -screen 0 1440x900x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 &
+
+# Wait until the X server socket exists before launching any headed apps.
+for i in $(seq 1 50); do
+  if [ -S /tmp/.X11-unix/X99 ]; then
+    echo "Xvfb is ready on $DISPLAY"
+    break
+  fi
+  if [ "$i" -eq 50 ]; then
+    echo "Xvfb failed to start"
+    cat /tmp/xvfb.log || true
+    exit 1
+  fi
+  sleep 0.2
+done
+
 fluxbox >/tmp/fluxbox.log 2>&1 &
 
 if [ -n "${VNC_PASSWORD:-}" ]; then
