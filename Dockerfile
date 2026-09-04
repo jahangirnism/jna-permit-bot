@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc novnc websockify fluxbox \
+    poppler-utils tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
