@@ -37,44 +37,59 @@ async function openSecondaryPermitEdit(){
   const permitNav=page.getByText('Permit',{exact:true}).first();
   if(await permitNav.isVisible({timeout:5000}).catch(()=>false))await permitNav.click({force:true});
   await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:12000}).catch(()=>{});
-
-  // Bind the Edit action to the smallest DOM container that actually contains
-  // Permit Number 150273. This avoids a large wrapper accidentally selecting
-  // the Edit link for permit 153912.
   const result=await page.evaluate(permit=>{
     const norm=s=>(s||'').replace(/\s+/g,' ').trim();
     const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');
     const editLinks=[...document.querySelectorAll('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]')];
     const candidates=[];
-    for(const link of editLinks){
-      let node=link;
-      for(let depth=0;depth<12&&node;depth++,node=node.parentElement){
-        const text=norm(node.innerText||node.textContent);
-        if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){
-          candidates.push({link,node,depth,textLength:text.length});
-          break;
-        }
-      }
-    }
-    candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);
-    const chosen=candidates[0];
-    if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};
-    const text=norm(chosen.node.innerText||chosen.node.textContent);
-    if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};
-    chosen.link.click();
-    return{clicked:true,id:chosen.link.id,href:chosen.link.getAttribute('href')||''};
+    for(const link of editLinks){let node=link;for(let depth=0;depth<12&&node;depth++,node=node.parentElement){const text=norm(node.innerText||node.textContent);if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){candidates.push({link,node,depth,textLength:text.length});break;}}}
+    candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);const chosen=candidates[0];if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};const text=norm(chosen.node.innerText||chosen.node.textContent);if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};chosen.link.click();return{clicked:true};
   },SECONDARY_PERMIT).catch(error=>({clicked:false,reason:error.message}));
   if(!result?.clicked)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:result?.reason||'unknown'};
-
-  await page.waitForTimeout(2500);
-  const txRaw=await page.locator('body').innerText().catch(()=>'' );
-  const txMatch=txRaw.match(/Transaction\s*#\s*([0-9]+)/i);
-  const actualTx=txMatch?.[1]||null;
-  if(actualTx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:actualTx,url:page.url()};
-  return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};
+  await page.waitForTimeout(2500);const txRaw=await page.locator('body').innerText().catch(()=>'' );const txMatch=txRaw.match(/Transaction\s*#\s*([0-9]+)/i);const actualTx=txMatch?.[1]||null;if(actualTx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:actualTx,url:page.url()};return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};
 }
 
-export async function prepareSecondaryListing(payload={}){try{const {purpose,propertyType,deed={}}=payload;if(!['RENT','SALE'].includes(purpose))return{status:'invalid_listing_purpose'};if(!['LAND','BUILDING','VILLA','UNIT'].includes(propertyType))return{status:'invalid_property_type'};if(propertyType!=='UNIT')return{status:'property_type_not_mapped',propertyType};for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;const add=page.getByText('Add Property/Project',{exact:true}).first();if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};await add.click({force:true});await page.waitForTimeout(800);if(!(await clickRadioLabel('Property')))return{status:'listing_type_property_not_found',url:page.url()};if(!(await clickRadioLabel(purpose==='RENT'?'Rent':'Sell')))return{status:'listing_purpose_not_found',url:page.url()};const proceed=page.getByText('Proceed',{exact:true}).first();if(!(await proceed.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};await proceed.click({force:true});await page.waitForTimeout(900);if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};const land=await inputNearLabel('Land No'),building=await inputNearLabel('Building Name'),unit=await inputNearLabel('Unit No');if(!land||!building||!unit)return{status:'property_search_fields_not_found',url:page.url()};await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));const municipality=await inputNearLabel('Municipality No');if(municipality)await municipality.fill('');const search=page.getByText('Search',{exact:true}).last();if(!(await search.isVisible({timeout:3000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};await search.click({force:true});await page.waitForTimeout(1800);const rows=page.locator('table tr');let match=null;for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt)continue;const normalized=txt.toLowerCase();if(normalized.includes(String(deed.unitNo).toLowerCase())&&normalized.includes(String(deed.buildingName).toLowerCase())&&normalized.includes(String(deed.area).toLowerCase())){match=row;break;}}if(!match)return{status:'property_exact_match_not_found',expected:{unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area},url:page.url()};await match.click({force:true});await page.waitForTimeout(700);const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,url:page.url()};}catch(error){return{status:'prepare_listing_error',message:error.message,url:page?.url?.()||''};}}
+export async function prepareSecondaryListing(payload={}){try{
+  const {purpose,propertyType,deed={}}=payload;
+  if(!['RENT','SALE'].includes(purpose))return{status:'invalid_listing_purpose'};
+  if(!['LAND','BUILDING','VILLA','UNIT'].includes(propertyType))return{status:'invalid_property_type'};
+  if(propertyType!=='UNIT')return{status:'property_type_not_mapped',propertyType};
+  for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};
+  const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;
+
+  const add=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton, input[type="submit"][value="Add Property/Project"][name*="UCPropertyList1$AddPropertyButton"]').first();
+  if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};
+  await add.click({force:true});await page.waitForTimeout(900);
+
+  const propertyLabel=page.locator('label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingTypeRbl_2"]').first();
+  if(!(await propertyLabel.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_type_property_not_found',url:page.url()};
+  await propertyLabel.click({force:true});await page.waitForTimeout(400);
+
+  const purposeSelector=purpose==='RENT'
+    ? 'label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_0"]'
+    : 'label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_1"]';
+  const purposeLabel=page.locator(purposeSelector).first();
+  if(!(await purposeLabel.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_purpose_not_found',url:page.url()};
+  await purposeLabel.click({force:true});await page.waitForTimeout(400);
+
+  const proceed=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton, input[type="submit"][value="Proceed"][name*="UCPropertyActionObj$ActionButton"]').first();
+  if(!(await proceed.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
+  await proceed.click({force:true});await page.waitForTimeout(1000);
+
+  if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};
+  if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
+  const land=await inputNearLabel('Land No'),building=await inputNearLabel('Building Name'),unit=await inputNearLabel('Unit No');
+  if(!land||!building||!unit)return{status:'property_search_fields_not_found',url:page.url()};
+  await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));
+  const municipality=await inputNearLabel('Municipality No');if(municipality)await municipality.fill('');
+  const search=page.getByText('Search',{exact:true}).last();if(!(await search.isVisible({timeout:3000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};
+  await search.click({force:true});await page.waitForTimeout(1800);
+  const rows=page.locator('table tr');let match=null;
+  for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt)continue;const normalized=txt.toLowerCase();if(normalized.includes(String(deed.unitNo).toLowerCase())&&normalized.includes(String(deed.buildingName).toLowerCase())&&normalized.includes(String(deed.area).toLowerCase())){match=row;break;}}
+  if(!match)return{status:'property_exact_match_not_found',expected:{unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area},url:page.url()};
+  await match.click({force:true});await page.waitForTimeout(700);const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,url:page.url()};
+}catch(error){return{status:'prepare_listing_error',message:error.message,url:page?.url?.()||''};}}
+
 export async function finalizeSecondaryListing(payload={}){try{if(!page||page.isClosed())return{status:'no_active_session'};const {value,marketingContract,advertisementFormat}=payload;if(!value||!marketingContract?.path||!advertisementFormat?.path)return{status:'listing_inputs_missing'};const valueInput=await inputNearLabel('Value');if(!valueInput)return{status:'value_field_not_found',url:page.url()};await valueInput.fill(String(value));const rows=page.locator('table tr');let marketingInput=null,adInput=null;for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).toLowerCase();if(txt.includes('marketing contract from the owner'))marketingInput=row.locator('input[type="file"]').first();if(txt.includes('copy of the advertisement format'))adInput=row.locator('input[type="file"]').first();}if(!marketingInput||!(await marketingInput.count())||!adInput||!(await adInput.count()))return{status:'document_upload_fields_not_found',url:page.url()};await marketingInput.setInputFiles(marketingContract.path);await adInput.setInputFiles(advertisementFormat.path);const announcement=await inputNearLabel('Announcement Text');if(announcement)await announcement.fill('');const save=page.getByText('Save',{exact:true}).last();if(!(await save.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_save_button_not_found',url:page.url()};await save.click({force:true});await page.waitForTimeout(2500);await saveSession();return{status:'listing_saved',permit:SECONDARY_PERMIT,url:page.url(),message:(await page.locator('body').innerText().catch(()=>'' )).slice(0,1200)};}catch(error){return{status:'finalize_listing_error',message:error.message,url:page?.url?.()||''};}}
 export async function startInteractiveDldLogin(){const u=process.env.DLD_USERNAME,p=process.env.DLD_PASSWORD;if(!u||!p)return{status:'missing_credentials'};await ensureSession();await selectBestPage();if(page&&page.url()!=='about:blank'){const existing=await detectState();if(existing.status==='uae_pass_approval_required')return waitForUaePassApproval(existing);if(['session_active','real_estate_admin_profile_selected','uae_pass','captcha_required','login_form'].includes(existing.status))return existing;}await page.goto(DLD_URL,{waitUntil:'domcontentloaded',timeout:45000});await page.waitForTimeout(3000);const body=await pageText(page);if(body.includes('dld application dashboard')){if(body.includes('trakheesi'))return clickTrakheesi();await saveSession();return{status:'session_active',url:page.url()};}const user=await firstVisible(page,['input[name="username"]','input[name="Username"]','input[type="text"][placeholder*="user" i]','input[type="email"]','input[type="text"]']);const pass=await firstVisible(page,['input[type="password"]']);if(!user||!pass)return{status:'login_form_not_found',url:page.url()};await user.fill(u);await pass.fill(p);return detectState();}
 export async function continueAfterCaptcha(){if(!page||page.isClosed())return{status:'no_active_session'};try{await selectBestPage();const m=await handleUaePassModal();if(m)return m;const raw=await page.locator('body').innerText({timeout:5000}).catch(()=>''),body=raw.toLowerCase();if(body.includes('dld application dashboard')&&body.includes('trakheesi'))return clickTrakheesi();if(/multiple profiles found/i.test(raw))return selectAdmin();if(body.includes('login to uae pass')||body.includes('emirates id, email, or phone'))return detectState();const btn=await firstVisible(page,['button:has-text("Sign In")','input[type="submit"]','button[type="submit"]']);if(btn){await btn.click({noWaitAfter:true});await page.waitForTimeout(4000);}const s=await detectState();return waitForUaePassApproval(s);}catch(error){return{status:'continue_error',message:error.message,url:page?.url?.()||''};}}
