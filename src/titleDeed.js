@@ -74,6 +74,11 @@ export function extractTitleDeedFields(text){
   plotNo=englishOnly(plotNo,{identifier:true});
   propertyNo=englishOnly(propertyNo,{identifier:true});
 
+  // Unit/property identifiers are overwhelmingly numeric in positions where OCR
+  // often confuses the digit zero with the letter O. Search DLD using the numeric
+  // form first (for example P3-A-O1 -> P3-A-01).
+  propertyNo=propertyNo.replace(/O/g,'0').replace(/o/g,'0');
+
   return {
     area: community || null,
     landNo: plotNo || null,
