@@ -124,14 +124,17 @@ export async function prepareSecondaryListing(payload={}){try{
   }
   if(!(await purposeRadio.count().catch(()=>0)))return{status:'listing_purpose_not_found',url:page.url()};
   await purposeRadio.evaluate(el=>el.click());
-  await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
-  await page.waitForTimeout(1200);
 
-  const proceed=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton').first();
-  if(!(await proceed.count().catch(()=>0)))return{status:'listing_proceed_not_found',url:page.url()};
+  const proceedId='MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton';
+  await page.waitForFunction(id=>{
+    const el=document.getElementById(id);
+    return !!el && el.offsetParent!==null && el.value==='Proceed';
+  },proceedId,{timeout:10000}).catch(()=>{});
+  await page.waitForTimeout(300);
+  const proceed=page.locator(`#${proceedId}`).first();
+  if(!(await proceed.isVisible({timeout:3000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
   await proceed.evaluate(el=>el.click());
-  await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1200);
 
   const unitLabel=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UnitLabel').first();
   if(!(await unitLabel.count().catch(()=>0)))return{status:'unit_tab_not_found',url:page.url()};
