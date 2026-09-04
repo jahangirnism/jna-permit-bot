@@ -16,8 +16,20 @@ async function saveSession(){try{fs.mkdirSync(path.dirname(SESSION_PATH),{recurs
 function clearLocks(){for(const n of['SingletonLock','SingletonSocket','SingletonCookie']){try{fs.rmSync(path.join(PROFILE_DIR,n),{force:true});}catch{}}}
 async function clickText(text,exact=true){const l=page.getByText(text,{exact}).first();if(await l.isVisible({timeout:5000}).catch(()=>false)){await l.click({force:true});return true;}return false;}
 async function clickRadioLabel(label){
-  const byLabel=page.getByLabel(new RegExp(`^${label}$`,'i')).first();if(await byLabel.count().catch(()=>0)){await byLabel.check({force:true}).catch(()=>byLabel.click({force:true}));return true;}
-  const text=page.getByText(new RegExp(`^${label}$`,'i')).first();if(await text.isVisible({timeout:4000}).catch(()=>false)){await text.click({force:true});return true;}
+  const byLabel=page.getByLabel(new RegExp(`^${label}$`,'i')).first();
+  if(await byLabel.count().catch(()=>0)){
+    try{
+      await byLabel.evaluate(el=>el.click());
+      await page.waitForTimeout(900);
+      return true;
+    }catch{}
+  }
+  const text=page.getByText(new RegExp(`^${label}$`,'i')).first();
+  if(await text.isVisible({timeout:4000}).catch(()=>false)){
+    await text.click({force:true});
+    await page.waitForTimeout(900);
+    return true;
+  }
   return false;
 }
 async function inputNearLabel(label){
