@@ -66,20 +66,38 @@ export async function prepareSecondaryListing(payload={}){try{
   if(!(await propertyRadio.count().catch(()=>0)))return{status:'listing_type_property_not_found',url:page.url()};
   await propertyRadio.evaluate(el=>el.click());
 
-  const purposeDiv=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingPurposeDiv').first();
-  if(!(await purposeDiv.isVisible({timeout:6000}).catch(()=>false)))return{status:'listing_purpose_not_found',url:page.url()};
+  // Selecting Property triggers an ASP.NET postback. Wait for that postback to
+  // finish, then reacquire the controls from the re-rendered DOM. The purpose
+  // block can exist while temporarily hidden, so do not fail on visibility alone.
+  await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
+  await page.waitForTimeout(1400);
 
   const purposeId=purpose==='RENT'
     ? '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_0'
     : '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_1';
-  const purposeRadio=page.locator(purposeId).first();
+
+  let purposeRadio=page.locator(purposeId).first();
+  if(!(await purposeRadio.count().catch(()=>0))){
+    // Some Trakheesi postbacks close the modal visually. Reopen it once; the
+    // server normally keeps the Property selection from the postback.
+    const addAgain=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton').first();
+    if(await addAgain.isVisible({timeout:2500}).catch(()=>false)){
+      await addAgain.evaluate(el=>el.click());
+      await page.waitForTimeout(900);
+      purposeRadio=page.locator(purposeId).first();
+    }
+  }
   if(!(await purposeRadio.count().catch(()=>0)))return{status:'listing_purpose_not_found',url:page.url()};
+
   await purposeRadio.evaluate(el=>el.click());
+  await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
+  await page.waitForTimeout(1200);
 
   const proceed=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton').first();
-  if(!(await proceed.isVisible({timeout:6000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
+  if(!(await proceed.count().catch(()=>0)))return{status:'listing_proceed_not_found',url:page.url()};
   await proceed.evaluate(el=>el.click());
-  await page.waitForTimeout(1200);
+  await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
+  await page.waitForTimeout(1000);
 
   if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};
   if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
