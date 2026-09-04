@@ -29,12 +29,33 @@ function extractUaePassChallenge(text){for(const p of[/(?:number|code|match|matc
 async function isDldDashboard(){const b=(await page.locator('body').innerText({timeout:5000}).catch(()=>'' )).toLowerCase();return b.includes('dld application dashboard')||b.includes('multiple profiles found');}
 
 async function handleUaePassModal(){
-  const modal=page.locator('#application-infoUAE[role="dialog"], #application-infoUAE.modal.show').first();
-  if(!(await modal.isVisible({timeout:1000}).catch(()=>false))) return null;
-  let continueBtn=modal.getByRole('button',{name:/continue with uae pass/i}).first();
-  if(!(await continueBtn.isVisible().catch(()=>false))) continueBtn=modal.getByText(/continue with uae pass/i).first();
-  if(!(await continueBtn.isVisible().catch(()=>false))) return {status:'uae_pass_modal_button_not_found',url:page.url(),browserUrl:browserUrl()};
-  await continueBtn.click({timeout:5000,noWaitAfter:true,force:true});
+  const modal=page.locator('#application-infoUAE').first();
+  if(!(await modal.isVisible({timeout:1200}).catch(()=>false))) return null;
+
+  // DLD renders this control inconsistently (sometimes not as a semantic button),
+  // so search by visible text inside this exact modal first.
+  let continueBtn=modal.locator('button, a, [role="button"], .btn, [onclick]').filter({hasText:/continue\s+with\s+uae\s*pass/i}).first();
+  if(!(await continueBtn.isVisible({timeout:1200}).catch(()=>false))) {
+    continueBtn=modal.getByText(/continue\s+with\s+uae\s*pass/i).first();
+  }
+
+  if(await continueBtn.isVisible({timeout:1200}).catch(()=>false)) {
+    await continueBtn.click({timeout:5000,noWaitAfter:true,force:true});
+  } else {
+    // Final fallback: find the matching text node in the modal and click the nearest clickable ancestor.
+    const clicked=await page.evaluate(() => {
+      const modal=document.querySelector('#application-infoUAE');
+      if(!modal) return false;
+      const normalize=s => (s||'').replace(/\s+/g,' ').trim().toLowerCase();
+      const target=[...modal.querySelectorAll('*')].find(el => normalize(el.textContent).includes('continue with uae pass'));
+      if(!target) return false;
+      const clickable=target.closest('button,a,[role="button"],.btn,[onclick]') || target;
+      clickable.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
+      return true;
+    }).catch(()=>false);
+    if(!clicked) return {status:'uae_pass_modal_button_not_found',url:page.url(),browserUrl:browserUrl()};
+  }
+
   await page.waitForTimeout(3500);
   return submitUaePassId();
 }
@@ -52,13 +73,10 @@ export async function startInteractiveDldLogin(){
   if(!u||!p)return{status:'missing_credentials'};
   if(!process.env.VNC_PASSWORD)return{status:'missing_vnc_password'};
   await ensureSession();
-
-  // Never destroy or replace a live browser session just because another Telegram command arrived.
   if(page.url()!=='about:blank'){
     const s=await detectState();
     if(['session_active','real_estate_admin_profile_selected','uae_pass','uae_pass_approval_required'].includes(s.status))return s;
   }
-
   await page.goto(DLD_URL,{waitUntil:'domcontentloaded',timeout:45000});
   await page.waitForTimeout(4000);
   if(await isDldDashboard()){
