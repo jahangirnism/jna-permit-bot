@@ -1,89 +1,110 @@
 import { chromium } from 'playwright';
 
 const DLD_URL = 'https://dubailand.gov.ae/en/MyDLD/#/login/sso';
+let browser;
+let context;
+let page;
 
-async function firstVisible(page, selectors) {
+async function firstVisible(pageObj, selectors) {
   for (const selector of selectors) {
-    const locator = page.locator(selector).first();
+    const locator = pageObj.locator(selector).first();
     try {
-      if (await locator.isVisible({ timeout: 1500 })) return locator;
+      if (await locator.isVisible({ timeout: 1200 })) return locator;
     } catch {}
   }
   return null;
 }
 
-export async function testDldLogin() {
+function browserUrl() {
+  const explicit = process.env.BROWSER_PUBLIC_URL;
+  if (explicit) return explicit.replace(/\/$/, '') + '/vnc.html?autoconnect=true&resize=scale';
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  if (railwayDomain) return `https://${railwayDomain}/vnc.html?autoconnect=true&resize=scale`;
+  return null;
+}
+
+async function ensureSession() {
+  if (browser && context && page && !page.isClosed()) return;
+  browser = await chromium.launch({
+    headless: false,
+    args: ['--no-sandbox', '--disable-dev-shm-usage', '--window-size=1440,900']
+  });
+  context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
+  page = await context.newPage();
+  page.setDefaultTimeout(15000);
+}
+
+async function detectState() {
+  const url = page.url();
+  const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+  const captcha = bodyText.includes("i'm not a robot") || bodyText.includes('recaptcha') ||
+    (await page.locator('iframe[src*="recaptcha"], iframe[title*="recaptcha" i]').count().catch(() => 0)) > 0;
+
+  if (bodyText.includes('authentication code')) return { status: 'authentication_code', url };
+  if (bodyText.includes('uae pass') || bodyText.includes('uaepass')) return { status: 'uae_pass', url };
+  if (captcha) return { status: 'captcha_required', url, browserUrl: browserUrl() };
+
+  const passField = await firstVisible(page, ['input[type="password"]']);
+  if (passField) return { status: 'login_form', url };
+
+  return { status: 'post_login_unknown', url, title: await page.title().catch(() => '') };
+}
+
+export async function startInteractiveDldLogin() {
   const username = process.env.DLD_USERNAME;
   const password = process.env.DLD_PASSWORD;
   if (!username || !password) return { status: 'missing_credentials' };
+  if (!process.env.VNC_PASSWORD) return { status: 'missing_vnc_password' };
 
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  page.setDefaultTimeout(15000);
+  await ensureSession();
+  await page.goto(DLD_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(4000);
 
+  const userInput = await firstVisible(page, [
+    'input[name="username"]:not([type="radio"]):not([type="checkbox"])',
+    'input[name="Username"]:not([type="radio"]):not([type="checkbox"])',
+    'input[type="text"][id*="user" i]',
+    'input[type="text"][placeholder*="user" i]',
+    'input[type="email"]',
+    'input[type="text"]'
+  ]);
+  const passInput = await firstVisible(page, [
+    'input[type="password"][name="password"]',
+    'input[type="password"][name="Password"]',
+    'input[type="password"][id*="pass" i]',
+    'input[type="password"][placeholder*="pass" i]',
+    'input[type="password"]'
+  ]);
+
+  if (!userInput || !passInput) {
+    return { status: 'login_form_not_found', url: page.url(), title: await page.title() };
+  }
+
+  await userInput.fill(username);
+  await passInput.fill(password);
+  return detectState();
+}
+
+export async function continueAfterCaptcha() {
+  if (!page || page.isClosed()) return { status: 'no_active_session' };
+
+  const signIn = await firstVisible(page, [
+    'button:has-text("Sign In")',
+    'button:has-text("Login")',
+    'input[type="submit"]',
+    'button[type="submit"]'
+  ]);
+  if (!signIn) return { status: 'signin_button_not_found', url: page.url() };
+
+  await signIn.click();
+  await page.waitForTimeout(6000);
+  return detectState();
+}
+
+export async function testDldLogin() {
   try {
-    await page.goto(DLD_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForTimeout(4000);
-
-    const userInput = await firstVisible(page, [
-      'input[name="username"]:not([type="radio"]):not([type="checkbox"])',
-      'input[name="Username"]:not([type="radio"]):not([type="checkbox"])',
-      'input[type="text"][id*="user" i]',
-      'input[type="text"][placeholder*="user" i]',
-      'input[type="email"]',
-      'input[type="text"]'
-    ]);
-
-    const passInput = await firstVisible(page, [
-      'input[type="password"][name="password"]',
-      'input[type="password"][name="Password"]',
-      'input[type="password"][id*="pass" i]',
-      'input[type="password"][placeholder*="pass" i]',
-      'input[type="password"]'
-    ]);
-
-    if (!userInput || !passInput) {
-      return { status: 'login_form_not_found', url: page.url(), title: await page.title() };
-    }
-
-    await userInput.fill(username);
-    await passInput.fill(password);
-
-    const bodyText = (await page.locator('body').innerText()).toLowerCase();
-    const captcha = bodyText.includes("i'm not a robot") || bodyText.includes('recaptcha') ||
-      (await page.locator('iframe[src*="recaptcha"], iframe[title*="recaptcha" i]').count()) > 0;
-
-    if (captcha) {
-      return {
-        status: 'captcha_required',
-        url: page.url(),
-        message: 'DLD credentials were filled. CAPTCHA requires manual completion.'
-      };
-    }
-
-    const signIn = await firstVisible(page, [
-      'button:has-text("Sign In")',
-      'button:has-text("Login")',
-      'input[type="submit"]',
-      'button[type="submit"]'
-    ]);
-
-    if (!signIn) return { status: 'signin_button_not_found', url: page.url() };
-
-    await signIn.click();
-    await page.waitForTimeout(5000);
-    const afterText = (await page.locator('body').innerText()).toLowerCase();
-
-    if (afterText.includes('authentication code')) return { status: 'authentication_code', url: page.url() };
-    if (afterText.includes('uae pass') || afterText.includes('uaepass')) return { status: 'uae_pass', url: page.url() };
-    if (afterText.includes("i'm not a robot") || afterText.includes('recaptcha')) return { status: 'captcha_required', url: page.url() };
-
-    return { status: 'post_login_unknown', url: page.url(), title: await page.title() };
+    return await startInteractiveDldLogin();
   } catch (error) {
     return { status: 'error', message: error.message };
-  } finally {
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
   }
 }
