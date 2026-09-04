@@ -49,25 +49,16 @@ async function openSecondaryPermitEdit(){
   for(let i=0;i<await menuCandidates.count();i++){const el=menuCandidates.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))).trim();if(txt==='...'||/more|menu|ellipsis|action/i.test(txt)){menu=el;break;}}
   if(!menu){for(let i=(await menuCandidates.count())-1;i>=0;i--){const el=menuCandidates.nth(i);if(await el.isVisible().catch(()=>false)){menu=el;break;}}}
   if(!menu)return{status:'permit_menu_not_found',permit:SECONDARY_PERMIT,url:page.url()};
-  await menu.click({force:true});await page.waitForTimeout(900);
-  let clicked=false;
-  for(const frame of page.frames()){
-    const role=frame.getByRole('menuitem',{name:/^Edit$/i}).first();
-    if(await role.isVisible({timeout:500}).catch(()=>false)){await role.click({force:true}).catch(()=>{});clicked=true;break;}
-    const text=frame.getByText(/^\s*Edit\s*$/i,{exact:false}).first();
-    if(await text.isVisible({timeout:500}).catch(()=>false)){await text.click({force:true}).catch(()=>{});clicked=true;break;}
-    const shadowClicked=await frame.evaluate(()=>{
-      const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0;};
-      const roots=[];const walk=root=>{roots.push(root);for(const el of root.querySelectorAll('*'))if(el.shadowRoot)walk(el.shadowRoot);};walk(document);
-      const norm=s=>(s||'').replace(/\s+/g,' ').trim();
-      const matches=[];
-      for(const root of roots)for(const el of root.querySelectorAll('*')){if(!visible(el)||!/^Edit$/i.test(norm(el.innerText||el.textContent)))continue;let p=el,menuLike=false;for(let n=0;n<7&&p;n++,p=p.parentElement||p.getRootNode()?.host){const t=norm(p.innerText||p.textContent);if(t.includes('Permit')&&t.includes('Receipt')&&t.includes('Edit')&&t.includes('Cancel')&&t.includes('Details')){menuLike=true;break;}}if(menuLike)matches.push(el);}
-      matches.sort((a,b)=>a.children.length-b.children.length||a.getBoundingClientRect().width-b.getBoundingClientRect().width);
-      const target=matches[0];if(!target)return false;target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));target.click();return true;
-    }).catch(()=>false);
-    if(shadowClicked){clicked=true;break;}
-  }
-  if(!clicked){const diagnostics=[];for(const frame of page.frames()){const body=(await frame.locator('body').innerText({timeout:500}).catch(()=>'' )).replace(/\s+/g,' ');if(body.includes('Edit'))diagnostics.push(frame.url()||'main');}return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),diagnostics};}
+  await menu.click({force:true});await page.waitForTimeout(500);
+
+  // Trakheesi renders Edit as an ASP.NET LinkButton anchor. Target the
+  // actual anchor inside the already-verified 150273 card instead of its span text.
+  const edit=card.locator('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]').first();
+  if(!(await edit.count().catch(()=>0)))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  const title=(await edit.getAttribute('title').catch(()=>''))||'';
+  const label=(await edit.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
+  if(title!=='Edit Permit'&&!/^Edit$/i.test(label))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  await edit.evaluate(el=>el.click());
   await page.waitForTimeout(2500);
   const tx=await page.locator('body').innerText().catch(()=>'' );
   if(!tx.includes(SECONDARY_PERMIT))return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,url:page.url()};
