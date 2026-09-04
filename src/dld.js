@@ -50,6 +50,34 @@ async function detectState() {
   return { status: 'post_login_unknown', url, title: await page.title().catch(() => '') };
 }
 
+async function clickTrakheesiUaePass() {
+  const trakheesiText = page.getByText('Trakheesi', { exact: true }).first();
+  try {
+    if (!(await trakheesiText.isVisible({ timeout: 8000 }))) {
+      return { status: 'trakheesi_not_found', url: page.url() };
+    }
+  } catch {
+    return { status: 'trakheesi_not_found', url: page.url() };
+  }
+
+  const card = trakheesiText.locator('xpath=ancestor::*[.//button or .//a][1]');
+  let loginButton = card.getByRole('button', { name: /login with uae pass/i }).first();
+  if (!(await loginButton.isVisible().catch(() => false))) {
+    loginButton = card.getByRole('link', { name: /login with uae pass/i }).first();
+  }
+  if (!(await loginButton.isVisible().catch(() => false))) {
+    loginButton = card.getByText('Login with UAE Pass', { exact: true }).first();
+  }
+
+  if (!(await loginButton.isVisible().catch(() => false))) {
+    return { status: 'trakheesi_uae_pass_button_not_found', url: page.url() };
+  }
+
+  await loginButton.click();
+  await page.waitForTimeout(5000);
+  return detectState();
+}
+
 export async function startInteractiveDldLogin() {
   const username = process.env.DLD_USERNAME;
   const password = process.env.DLD_PASSWORD;
@@ -98,7 +126,18 @@ export async function continueAfterCaptcha() {
 
   await signIn.click();
   await page.waitForTimeout(6000);
+
+  const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+  if (bodyText.includes('trakheesi') && bodyText.includes('login with uae pass')) {
+    return clickTrakheesiUaePass();
+  }
+
   return detectState();
+}
+
+export async function clickTrakheesiLogin() {
+  if (!page || page.isClosed()) return { status: 'no_active_session' };
+  return clickTrakheesiUaePass();
 }
 
 export async function testDldLogin() {
