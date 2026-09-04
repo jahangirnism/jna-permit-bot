@@ -1,4 +1,4 @@
-import { testDldLogin, continueAfterCaptcha } from './dld.js';
+import { testDldLogin, continueAfterCaptcha, continueUaePassLogin, checkUaePassStatus } from './dld.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -37,9 +37,21 @@ function resultMessage(result) {
       return `DLD login page is ready. Username/password are filled.\n\n1. Open the browser link below.\n2. Enter your VNC password if asked.\n3. Tick “I’m not a robot”.\n4. Return to Telegram and send /continue.${link}`;
     }
     case 'authentication_code':
-      return 'CAPTCHA/login submitted successfully. DLD has reached the authentication-code screen.';
+      return 'DLD reached an authentication-code screen.';
     case 'uae_pass':
-      return 'CAPTCHA/login submitted successfully. DLD has reached UAE PASS authentication.';
+      return 'Trakheesi UAE PASS page is open. The bot is ready to use the Emirates ID stored in Railway. Send /uaepass to continue.';
+    case 'uae_pass_id_required':
+      return 'Add UAE_PASS_EMIRATES_ID in Railway Variables, redeploy, then repeat the login. The Emirates ID will be filled automatically and will not be requested in Telegram.';
+    case 'uae_pass_id_field_not_found':
+      return 'UAE PASS opened, but the Emirates ID field was not detected. Open the interactive browser and send me a screenshot of that page.';
+    case 'uae_pass_login_button_not_found':
+      return 'The Emirates ID field was filled, but the UAE PASS Login button was not detected.';
+    case 'uae_pass_approval_required':
+      return `UAE PASS APPROVAL REQUIRED\n\nSelect number ${result.challenge} in your UAE PASS app.\n\nAfter approving, send /checkuaepass.`;
+    case 'trakheesi_not_found':
+      return 'DLD dashboard opened, but the Trakheesi card was not detected.';
+    case 'trakheesi_uae_pass_button_not_found':
+      return 'Trakheesi was detected, but its “Login with UAE Pass” button was not found.';
     case 'no_active_session':
       return 'There is no active DLD browser session. Send /testlogin first.';
     case 'login_form_not_found':
@@ -77,7 +89,7 @@ async function handleUpdate(update) {
   console.log(`Received ${command} from chat ${chatId}`);
 
   if (command === '/start') {
-    await sendMessage(chatId, 'Welcome to JnA Permit Bot.\n\nUse /testlogin to start the DLD login test.\nAfter manually completing CAPTCHA in the browser, send /continue.');
+    await sendMessage(chatId, 'Welcome to JnA Permit Bot.\n\nUse /testlogin to start DLD login.\nAfter CAPTCHA, send /continue.\nIf needed, use /uaepass and /checkuaepass for UAE PASS approval.');
     return;
   }
   if (command === '/testlogin') {
@@ -88,6 +100,19 @@ async function handleUpdate(update) {
     await sendMessage(chatId, 'Continuing the active DLD login session…');
     const result = await continueAfterCaptcha();
     console.log('DLD continue status:', result.status, result.url || '');
+    await sendMessage(chatId, resultMessage(result));
+    return;
+  }
+  if (command === '/uaepass') {
+    await sendMessage(chatId, 'Submitting the stored Emirates ID to UAE PASS…');
+    const result = await continueUaePassLogin();
+    console.log('UAE PASS submit status:', result.status, result.url || '');
+    await sendMessage(chatId, resultMessage(result));
+    return;
+  }
+  if (command === '/checkuaepass') {
+    const result = await checkUaePassStatus();
+    console.log('UAE PASS check status:', result.status, result.url || '');
     await sendMessage(chatId, resultMessage(result));
     return;
   }
