@@ -18,38 +18,47 @@ async function clickText(text,exact=true){const l=page.getByText(text,{exact}).f
 async function clickRadioLabel(label){const byLabel=page.getByLabel(new RegExp(`^${label}$`,'i')).first();if(await byLabel.count().catch(()=>0)){try{await byLabel.evaluate(el=>el.click());await page.waitForTimeout(900);return true;}catch{}}const text=page.getByText(new RegExp(`^${label}$`,'i')).first();if(await text.isVisible({timeout:4000}).catch(()=>false)){await text.click({force:true});await page.waitForTimeout(900);return true;}return false;}
 async function inputNearLabel(label){const lab=page.getByText(new RegExp(`^${label}\\s*\\*?$`,'i')).first();if(await lab.count().catch(()=>0)){const container=lab.locator('xpath=ancestor::*[self::div or self::td or self::label][1]');let input=container.locator('input,textarea').first();if(await input.count())return input;input=lab.locator('xpath=following::input[1]');if(await input.count())return input;}return null;}
 function normArea(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();}
-function areaScore(expected,candidate){const e=normArea(expected),c=normArea(candidate);if(!e||!c)return 0;if(e===c)return 1;if(e.includes(c))return .98;if(c.includes(e))return .94;const et=e.split(' '),ct=c.split(' ');let prefix=0;while(prefix<et.length&&prefix<ct.length&&et[prefix]===ct[prefix])prefix++;if(prefix>=2)return .97;if(prefix===1)return .84;const es=new Set(et),cs=new Set(ct);let shared=0;for(const t of cs)if(es.has(t))shared++;const precision=shared/Math.max(cs.size,1),recall=shared/Math.max(es.size,1);return precision&&recall?(2*precision*recall)/(precision+recall):0;}
+function areaScore(expected,candidate){const e=normArea(expected),c=normArea(candidate);if(!e||!c)return 0;if(e===c)return 1;if(e.startsWith(c+' '))return .99;if(e.includes(c))return .98;if(c.includes(e))return .94;const et=e.split(' '),ct=c.split(' ');let prefix=0;while(prefix<et.length&&prefix<ct.length&&et[prefix]===ct[prefix])prefix++;if(prefix>=2)return .97;if(prefix===1)return .84;const es=new Set(et),cs=new Set(ct);let shared=0;for(const t of cs)if(es.has(t))shared++;const precision=shared/Math.max(cs.size,1),recall=shared/Math.max(es.size,1);return precision&&recall?(2*precision*recall)/(precision+recall):0;}
 async function selectArea(area){
-  const input=page.locator('#ctl00_MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_LandTab_UCLandDetails_AreaListRadComboBox_Input').first();
+  // The Unit tab has its own Telerik RadComboBox. Do not use the similarly
+  // named Land-tab combo: it is a different control and its dropdown DOM/id
+  // differs. Telerik keeps all items in the DOM and hides filtered items.
+  const input=page.locator('#ctl00_MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_AreaListRadComboBox_Input').first();
+  const dropdown=page.locator('#ctl00_MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_AreaListRadComboBox_DropDown').first();
   if(!(await input.count().catch(()=>0)))return false;
-  const words=normArea(area).split(' ').filter(Boolean);
-  const queries=[];
-  if(words[0])queries.push(words[0]);
-  if(words.length>1)queries.push(words.slice(0,2).join(' '));
-  queries.push(String(area));
-  for(const query of [...new Set(queries.filter(Boolean))]){
-    await input.click({force:true}).catch(()=>{});
-    await input.press('Control+A').catch(()=>{});
-    await input.press('Backspace').catch(()=>{});
-    await input.pressSequentially(query,{delay:55}).catch(async()=>{await input.fill(query).catch(()=>{});});
-    await page.waitForTimeout(500);
-    await input.press('ArrowDown').catch(()=>{});
-    await page.waitForTimeout(700);
-    const arrow=input.locator('xpath=ancestor::*[contains(@class,"RadComboBox")][1]//*[contains(@class,"rcbActionButton") or contains(@class,"rcbArrowCell")]').first();
-    if(await arrow.count().catch(()=>0))await arrow.click({force:true}).catch(()=>{});
-    await page.waitForTimeout(400);
-    const options=page.locator('.rcbItem,.rcbHovered,.RadComboBoxDropDown li,[role="option"]');
-    const found=[];
-    for(let i=0;i<await options.count();i++){
-      const el=options.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;
-      const txt=(await el.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt||/^all$/i.test(txt))continue;
-      found.push({el,txt,score:areaScore(area,txt)});
-    }
-    found.sort((a,b)=>b.score-a.score);
-    if(found.length){const best=found[0],second=found[1];if(best.score>=0.72&&(!second||best.score>=0.95||best.score-second.score>=0.06)){await best.el.click({force:true}).catch(async()=>{await best.el.evaluate(el=>el.click()).catch(()=>{});});await page.waitForTimeout(500);return true;}}
-    await input.press('Escape').catch(()=>{});
+
+  // Open the actual Unit area combo so Telerik has initialized the list.
+  await input.click({force:true}).catch(()=>{});
+  await page.waitForTimeout(250);
+  const combo=input.locator('xpath=ancestor::*[contains(@class,"RadComboBox")][1]');
+  const arrow=combo.locator('.rcbActionButton,.rcbArrowCell,a').last();
+  if(await arrow.count().catch(()=>0))await arrow.click({force:true}).catch(()=>{});
+  await page.waitForTimeout(350);
+
+  const items=dropdown.locator('li.rcbItem,li.rcbHovered');
+  const candidates=[];
+  for(let i=0;i<await items.count();i++){
+    const el=items.nth(i);
+    const txt=(await el.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
+    if(!txt||/^all$/i.test(txt))continue;
+    candidates.push({el,txt,score:areaScore(area,txt)});
   }
-  return false;
+  candidates.sort((a,b)=>b.score-a.score);
+  const best=candidates[0],second=candidates[1];
+  if(!best||best.score<0.72)return false;
+  if(second&&best.score<0.95&&best.score-second.score<0.06)return false;
+
+  // Search/filter with the chosen canonical DLD name, then click that exact
+  // list item. This turns OCR such as "Business Bay Syl aut" into the actual
+  // DLD option "Business Bay" without hard-coding one community.
+  await input.fill(best.txt).catch(()=>{});
+  await page.waitForTimeout(250);
+  let exact=dropdown.locator('li.rcbItem,li.rcbHovered').filter({hasText:new RegExp(`^${best.txt.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')}$`,'i')}).first();
+  if(!(await exact.count().catch(()=>0)))exact=best.el;
+  await exact.evaluate(el=>el.click()).catch(async()=>{await exact.click({force:true}).catch(()=>{});});
+  await page.waitForTimeout(500);
+  const selected=normArea(await input.inputValue().catch(()=>''));
+  return selected===normArea(best.txt)||selected.includes(normArea(best.txt));
 }
 async function ensureSession(){if(context&&page&&!page.isClosed())return;fs.mkdirSync(PROFILE_DIR,{recursive:true});clearLocks();context=await chromium.launchPersistentContext(PROFILE_DIR,{channel:'chrome',headless:false,viewport:{width:1440,height:900},args:['--start-maximized']});page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(10000);}
 async function selectBestPage(){if(!context)return false;const pages=context.pages().filter(p=>!p.isClosed());if(!pages.length)return false;const scored=[];for(const p of pages){const url=(p.url()||'').toLowerCase(),text=await pageText(p);let score=0;if(url.includes('trakheesi.dubailand.gov.ae'))score=110;else if(text.includes('multiple profiles found')||text.includes('real estate office admin'))score=100;else if(text.includes('dld application dashboard')||text.includes('trakheesi'))score=90;else if(text.includes('login to uae pass')||text.includes('emirates id, email, or phone')||url.includes('uaepass'))score=80;else if(text.includes("i'm not a robot")||text.includes('recaptcha')||(await p.locator('iframe[src*="recaptcha"],iframe[title*="recaptcha" i]').count().catch(()=>0))>0)score=70;else if(await p.locator('input[type="password"]').count().catch(()=>0))score=60;else if(url.includes('dubailand.gov.ae'))score=50;else if(url!=='about:blank')score=10;scored.push({p,score});}scored.sort((a,b)=>b.score-a.score);if(scored[0]?.score>0){page=scored[0].p;page.setDefaultTimeout(10000);return true;}return false;}
