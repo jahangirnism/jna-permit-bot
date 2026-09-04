@@ -54,7 +54,31 @@ async function openSecondaryPermitEdit(){
   if(!menu){for(let i=(await menuCandidates.count())-1;i>=0;i--){const el=menuCandidates.nth(i);if(await el.isVisible().catch(()=>false)){menu=el;break;}}}
   if(!menu)return{status:'permit_menu_not_found',permit:SECONDARY_PERMIT,url:page.url()};
   await menu.click({force:true});
-  const edit=page.getByText('Edit',{exact:true}).last();if(!(await edit.isVisible({timeout:3000}).catch(()=>false)))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  await page.waitForTimeout(700);
+  let edit=null;
+  const preferred=page.locator('.dropdown-menu.show a, .dropdown-menu.show button, .dropdown-menu.show [role="menuitem"], [role="menu"] a, [role="menu"] button, [role="menu"] [role="menuitem"]');
+  for(let i=0;i<await preferred.count();i++){
+    const el=preferred.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;
+    const txt=(await el.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
+    const aria=((await el.getAttribute('aria-label').catch(()=>''))||'').trim();
+    const title=((await el.getAttribute('title').catch(()=>''))||'').trim();
+    if(/^(edit|edit\s+permit)$/i.test(txt)||/^edit$/i.test(aria)||/^edit$/i.test(title)){edit=el;break;}
+  }
+  if(!edit){
+    const candidates=page.locator('a,button,[role="menuitem"],[onclick],li');
+    for(let i=0;i<await candidates.count();i++){
+      const el=candidates.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;
+      const txt=(await el.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
+      const aria=((await el.getAttribute('aria-label').catch(()=>''))||'').trim();
+      const title=((await el.getAttribute('title').catch(()=>''))||'').trim();
+      if(/^(edit|edit\s+permit)$/i.test(txt)||/^edit$/i.test(aria)||/^edit$/i.test(title)){edit=el;break;}
+    }
+  }
+  if(!edit){
+    const textNode=page.getByText(/^\s*Edit\s*$/i).last();
+    if(await textNode.isVisible({timeout:1500}).catch(()=>false))edit=textNode;
+  }
+  if(!edit)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
   await edit.click({force:true});await page.waitForTimeout(2500);
   const tx=await page.locator('body').innerText().catch(()=>'' );if(!tx.includes(SECONDARY_PERMIT))return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,url:page.url()};
   return{status:'secondary_permit_edit_open',url:page.url()};
