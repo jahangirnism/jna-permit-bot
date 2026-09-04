@@ -17,9 +17,35 @@ function clearLocks(){for(const n of['SingletonLock','SingletonSocket','Singleto
 async function clickText(text,exact=true){const l=page.getByText(text,{exact}).first();if(await l.isVisible({timeout:5000}).catch(()=>false)){await l.click({force:true});return true;}return false;}
 async function clickRadioLabel(label){const byLabel=page.getByLabel(new RegExp(`^${label}$`,'i')).first();if(await byLabel.count().catch(()=>0)){try{await byLabel.evaluate(el=>el.click());await page.waitForTimeout(900);return true;}catch{}}const text=page.getByText(new RegExp(`^${label}$`,'i')).first();if(await text.isVisible({timeout:4000}).catch(()=>false)){await text.click({force:true});await page.waitForTimeout(900);return true;}return false;}
 async function inputNearLabel(label){const lab=page.getByText(new RegExp(`^${label}\\s*\\*?$`,'i')).first();if(await lab.count().catch(()=>0)){const container=lab.locator('xpath=ancestor::*[self::div or self::td or self::label][1]');let input=container.locator('input,textarea').first();if(await input.count())return input;input=lab.locator('xpath=following::input[1]');if(await input.count())return input;}return null;}
-async function selectArea(area){const lab=page.getByText(/Select Area/i).first();const native=lab.locator('xpath=following::select[1]');if(await native.count().catch(()=>0)){try{await native.selectOption({label:area});return true;}catch{}}const box=lab.locator('xpath=following::*[self::button or @role="combobox" or contains(@class,"select")][1]');if(await box.count().catch(()=>0)){await box.click({force:true}).catch(()=>{});const opt=page.getByText(new RegExp(`^${area}$`,'i')).last();if(await opt.isVisible({timeout:3000}).catch(()=>false)){await opt.click({force:true});return true;}}const allText=page.getByText(new RegExp(`^${area}$`,'i')).last();if(await allText.isVisible({timeout:2000}).catch(()=>false)){await allText.click({force:true});return true;}return false;}
+function normArea(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();}
+function areaScore(expected,candidate){const e=normArea(expected),c=normArea(candidate);if(!e||!c)return 0;if(e===c)return 1;if(e.includes(c))return .96;if(c.includes(e))return .92;const et=new Set(e.split(' ')),ct=new Set(c.split(' '));let shared=0;for(const t of ct)if(et.has(t))shared++;const precision=shared/Math.max(ct.size,1),recall=shared/Math.max(et.size,1);return precision&&recall?(2*precision*recall)/(precision+recall):0;}
+async function selectArea(area){
+  const input=page.locator('#ctl00_MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_LandTab_UCLandDetails_AreaListRadComboBox_Input').first();
+  if(!(await input.count().catch(()=>0)))return false;
+  const words=normArea(area).split(' ').filter(Boolean);
+  const query=words.slice(0,Math.min(2,words.length)).join(' ')||String(area);
+  await input.click({force:true}).catch(()=>{});
+  await input.fill(query).catch(()=>{});
+  await input.press('ArrowDown').catch(()=>{});
+  await page.waitForTimeout(800);
+  const options=page.locator('.rcbItem,.rcbHovered,.RadComboBoxDropDown li,[role="option"]');
+  const found=[];
+  for(let i=0;i<await options.count();i++){
+    const el=options.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;
+    const txt=(await el.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt||/^all$/i.test(txt))continue;
+    found.push({el,txt,score:areaScore(area,txt)});
+  }
+  found.sort((a,b)=>b.score-a.score);
+  if(!found.length)return false;
+  const best=found[0],second=found[1];
+  if(best.score<0.72)return false;
+  if(second&&best.score<0.95&&best.score-second.score<0.08)return false;
+  await best.el.click({force:true}).catch(async()=>{await best.el.evaluate(el=>el.click()).catch(()=>{});});
+  await page.waitForTimeout(400);
+  return true;
+}
 async function ensureSession(){if(context&&page&&!page.isClosed())return;fs.mkdirSync(PROFILE_DIR,{recursive:true});clearLocks();context=await chromium.launchPersistentContext(PROFILE_DIR,{channel:'chrome',headless:false,viewport:{width:1440,height:900},args:['--start-maximized']});page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(10000);}
-async function selectBestPage(){if(!context)return false;const pages=context.pages().filter(p=>!p.isClosed());if(!pages.length)return false;const scored=[];for(const p of pages){const url=(p.url()||'').toLowerCase(),text=await pageText(p);let score=0;if(url.includes('trakheesi.dubailand.gov.ae'))score=110;else if(text.includes('multiple profiles found')||text.includes('real estate office admin'))score=100;else if(text.includes('dld application dashboard')||text.includes('trakheesi'))score=90;else if(text.includes('login to uae pass')||text.includes('emirates id, email, or phone')||url.includes('uaepass'))score=80;else if(text.includes("i'm not a robot")||text.includes('recaptcha'))score=70;else if(await p.locator('input[type="password"]').count().catch(()=>0))score=60;else if(url.includes('dubailand.gov.ae'))score=50;else if(url!=='about:blank')score=10;scored.push({p,score});}scored.sort((a,b)=>b.score-a.score);if(scored[0]?.score>0){page=scored[0].p;page.setDefaultTimeout(10000);return true;}return false;}
+async function selectBestPage(){if(!context)return false;const pages=context.pages().filter(p=>!p.isClosed());if(!pages.length)return false;const scored=[];for(const p of pages){const url=(p.url()||'').toLowerCase(),text=await pageText(p);let score=0;if(url.includes('trakheesi.dubailand.gov.ae'))score=110;else if(text.includes('multiple profiles found')||text.includes('real estate office admin'))score=100;else if(text.includes('dld application dashboard')||text.includes('trakheesi'))score=90;else if(text.includes('login to uae pass')||text.includes('emirates id, email, or phone')||url.includes('uaepass'))score=80;else if(text.includes("i'm not a robot")||text.includes('recaptcha')||(await p.locator('iframe[src*="recaptcha"],iframe[title*="recaptcha" i]').count().catch(()=>0))>0)score=70;else if(await p.locator('input[type="password"]').count().catch(()=>0))score=60;else if(url.includes('dubailand.gov.ae'))score=50;else if(url!=='about:blank')score=10;scored.push({p,score});}scored.sort((a,b)=>b.score-a.score);if(scored[0]?.score>0){page=scored[0].p;page.setDefaultTimeout(10000);return true;}return false;}
 async function switchToUaePass(){if(!context)return false;for(const p of [...context.pages()].reverse()){if(p.isClosed())continue;const url=(p.url()||'').toLowerCase(),text=await pageText(p);if(url.includes('uaepass')||text.includes('login to uae pass')||text.includes('emirates id, email, or phone')){page=p;page.setDefaultTimeout(10000);return true;}}return false;}
 function challenge(text){for(const r of[/(?:number|code|match|matching|shown|displayed)[^0-9]{0,100}([0-9]{2,3})/i,/([0-9]{2,3})[^0-9]{0,100}(?:number|code|match|matching|shown)/i]){const m=text.match(r);if(m)return m[1];}return null;}
 async function selectAdmin(){const raw=await page.locator('body').innerText({timeout:5000}).catch(()=>'' );if(!/multiple profiles found/i.test(raw))return null;const admin=page.getByText(/REAL ESTATE OFFICE ADMIN/i).first();if(!(await admin.isVisible({timeout:4000}).catch(()=>false)))return{status:'real_estate_admin_profile_not_found',url:page.url()};const card=admin.locator('xpath=ancestor::*[.//input[@type="radio"]][1]');let radio=card.locator('input[type="radio"]').first();if(!(await radio.count()))radio=admin.locator('xpath=following::input[@type="radio"][1]');if(!(await radio.count()))return{status:'admin_profile_radio_not_found',url:page.url()};await radio.check({force:true});const proceed=await firstVisible(page,['button:has-text("Proceed")','button:has-text("Continue")','button:has-text("Submit")','button:has-text("Next")','button[type="submit"]']);if(proceed){await proceed.click({noWaitAfter:true}).catch(()=>{});await page.waitForTimeout(3500);}await saveSession();return{status:'real_estate_admin_profile_selected',url:page.url()};}
@@ -65,21 +91,14 @@ export async function prepareSecondaryListing(payload={}){try{
   const propertyRadio=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingTypeRbl_2').first();
   if(!(await propertyRadio.count().catch(()=>0)))return{status:'listing_type_property_not_found',url:page.url()};
   await propertyRadio.evaluate(el=>el.click());
-
-  // Selecting Property triggers an ASP.NET postback. Wait for that postback to
-  // finish, then reacquire the controls from the re-rendered DOM. The purpose
-  // block can exist while temporarily hidden, so do not fail on visibility alone.
   await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
   await page.waitForTimeout(1400);
 
   const purposeId=purpose==='RENT'
     ? '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_0'
     : '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_1';
-
   let purposeRadio=page.locator(purposeId).first();
   if(!(await purposeRadio.count().catch(()=>0))){
-    // Some Trakheesi postbacks close the modal visually. Reopen it once; the
-    // server normally keeps the Property selection from the postback.
     const addAgain=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton').first();
     if(await addAgain.isVisible({timeout:2500}).catch(()=>false)){
       await addAgain.evaluate(el=>el.click());
@@ -88,7 +107,6 @@ export async function prepareSecondaryListing(payload={}){try{
     }
   }
   if(!(await purposeRadio.count().catch(()=>0)))return{status:'listing_purpose_not_found',url:page.url()};
-
   await purposeRadio.evaluate(el=>el.click());
   await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
   await page.waitForTimeout(1200);
@@ -99,11 +117,20 @@ export async function prepareSecondaryListing(payload={}){try{
   await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});
   await page.waitForTimeout(1000);
 
-  if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};
+  const unitLabel=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UnitLabel').first();
+  if(!(await unitLabel.count().catch(()=>0)))return{status:'unit_tab_not_found',url:page.url()};
+  await unitLabel.evaluate(el=>{const target=el.closest('a,[onclick],[role="tab"]')||el;target.click();});
+  await page.waitForTimeout(500);
+
   if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
-  const land=await inputNearLabel('Land No'),building=await inputNearLabel('Building Name'),unit=await inputNearLabel('Unit No');
-  if(!land||!building||!unit)return{status:'property_search_fields_not_found',url:page.url()};
-  await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));
+
+  const land=await inputNearLabel('Land No');
+  const building=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchBuildingNameTextBox').first();
+  const unit=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchPropertyTextBox').first();
+  if(!land||!(await building.count().catch(()=>0))||!(await unit.count().catch(()=>0)))return{status:'property_search_fields_not_found',url:page.url()};
+  await land.fill(String(deed.landNo));
+  await building.fill(String(deed.buildingName));
+  await unit.fill(String(deed.unitNo));
   const municipality=await inputNearLabel('Municipality No');if(municipality)await municipality.fill('');
   const search=page.getByText('Search',{exact:true}).last();if(!(await search.isVisible({timeout:3000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};
   await search.click({force:true});await page.waitForTimeout(1800);
