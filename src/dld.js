@@ -57,24 +57,29 @@ export async function prepareSecondaryListing(payload={}){try{
   for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};
   const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;
 
-  const add=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton, input[type="submit"][value="Add Property/Project"][name*="UCPropertyList1$AddPropertyButton"]').first();
+  const add=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton').first();
   if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};
-  await add.click({force:true});await page.waitForTimeout(900);
+  await add.evaluate(el=>el.click());
+  await page.waitForTimeout(900);
 
-  const propertyLabel=page.locator('label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingTypeRbl_2"]').first();
-  if(!(await propertyLabel.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_type_property_not_found',url:page.url()};
-  await propertyLabel.click({force:true});await page.waitForTimeout(400);
+  const propertyRadio=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingTypeRbl_2').first();
+  if(!(await propertyRadio.count().catch(()=>0)))return{status:'listing_type_property_not_found',url:page.url()};
+  await propertyRadio.evaluate(el=>el.click());
 
-  const purposeSelector=purpose==='RENT'
-    ? 'label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_0"]'
-    : 'label[for="MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_1"]';
-  const purposeLabel=page.locator(purposeSelector).first();
-  if(!(await purposeLabel.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_purpose_not_found',url:page.url()};
-  await purposeLabel.click({force:true});await page.waitForTimeout(400);
+  const purposeDiv=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingPurposeDiv').first();
+  if(!(await purposeDiv.isVisible({timeout:6000}).catch(()=>false)))return{status:'listing_purpose_not_found',url:page.url()};
 
-  const proceed=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton, input[type="submit"][value="Proceed"][name*="UCPropertyActionObj$ActionButton"]').first();
-  if(!(await proceed.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
-  await proceed.click({force:true});await page.waitForTimeout(1000);
+  const purposeId=purpose==='RENT'
+    ? '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_0'
+    : '#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ListingPurposeRbl_1';
+  const purposeRadio=page.locator(purposeId).first();
+  if(!(await purposeRadio.count().catch(()=>0)))return{status:'listing_purpose_not_found',url:page.url()};
+  await purposeRadio.evaluate(el=>el.click());
+
+  const proceed=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_ActionButton').first();
+  if(!(await proceed.isVisible({timeout:6000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
+  await proceed.evaluate(el=>el.click());
+  await page.waitForTimeout(1200);
 
   if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};
   if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
