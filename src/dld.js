@@ -123,15 +123,39 @@ async function submitUaePassId(){
 
 async function clickTrakheesi(){
   const t=page.getByText('Trakheesi',{exact:true}).first();if(!(await t.isVisible({timeout:5000}).catch(()=>false)))return{status:'trakheesi_not_found',url:page.url()};
-  const card=t.locator('xpath=ancestor::*[.//button or .//a][1]');let btn=card.getByRole('button',{name:/login with uae pass/i}).first();if(!(await btn.isVisible().catch(()=>false)))btn=card.getByText(/login with uae pass/i).first();if(!(await btn.isVisible().catch(()=>false)))return{status:'trakheesi_uae_pass_button_not_found',url:page.url()};
+  const card=t.locator('xpath=ancestor::*[.//*[contains(normalize-space(.),"Go to Account")] or .//*[contains(normalize-space(.),"Login with UAE Pass")]][1]');
+  let btn=card.getByText(/Go to Account/i,{exact:true}).first();
+  if(await btn.isVisible({timeout:1500}).catch(()=>false)){
+    const popup=context.waitForEvent('page',{timeout:4000}).catch(()=>null);
+    await btn.click({force:true,noWaitAfter:true});
+    const p=await popup;if(p){page=p;page.setDefaultTimeout(10000);}
+    await page.waitForTimeout(3500);await selectBestPage();
+    if(page.url().includes('trakheesi.dubailand.gov.ae')){await saveSession();return{status:'session_active',url:page.url()};}
+    return detectState();
+  }
+  btn=card.getByRole('button',{name:/login with uae pass/i}).first();if(!(await btn.isVisible().catch(()=>false)))btn=card.getByText(/login with uae pass/i).first();if(!(await btn.isVisible().catch(()=>false)))return{status:'trakheesi_account_button_not_found',url:page.url()};
   await btn.click({noWaitAfter:true});await page.waitForTimeout(1000);const m=await handleUaePassModal();return m||detectState();
 }
 
+async function ensureTrakheesiAccount(){
+  await selectBestPage();
+  if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};
+  const text=await pageText(page);
+  if(text.includes('dld application dashboard')&&text.includes('trakheesi')){
+    const entered=await clickTrakheesi();
+    await page.waitForTimeout(1500);await selectBestPage();
+    if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};
+    return entered;
+  }
+  return{status:'trakheesi_session_required',url:page.url()};
+}
+
 async function openSecondaryPermitEdit(){
-  await ensureSession();await selectBestPage();
-  if(!page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'trakheesi_session_required',url:page.url()};
-  if(await page.getByText('Permit',{exact:true}).first().isVisible({timeout:2500}).catch(()=>false)){await page.getByText('Permit',{exact:true}).first().click({force:true});await page.waitForTimeout(2000);}
-  const permitText=page.getByText(SECONDARY_PERMIT,{exact:true}).first();if(!(await permitText.isVisible({timeout:5000}).catch(()=>false)))return{status:'secondary_permit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  await ensureSession();
+  const entered=await ensureTrakheesiAccount();
+  if(!page.url().includes('trakheesi.dubailand.gov.ae'))return entered?.status==='session_active'?{status:'trakheesi_session_required',url:page.url()}:entered;
+  if(await page.getByText('Permit',{exact:true}).first().isVisible({timeout:5000}).catch(()=>false)){await page.getByText('Permit',{exact:true}).first().click({force:true});await page.waitForTimeout(2500);}
+  const permitText=page.getByText(SECONDARY_PERMIT,{exact:true}).first();if(!(await permitText.isVisible({timeout:7000}).catch(()=>false)))return{status:'secondary_permit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
   const card=permitText.locator('xpath=ancestor::*[.//*[contains(normalize-space(.),"Electronic Advertisement")]][1]');
   const menuCandidates=card.locator('button,a,[role="button"]');let menu=null;
   for(let i=0;i<await menuCandidates.count();i++){const el=menuCandidates.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))).trim();if(txt==='...'||/more|menu|ellipsis|action/i.test(txt)){menu=el;break;}}
@@ -195,12 +219,12 @@ export async function startInteractiveDldLogin(){
   const u=process.env.DLD_USERNAME,p=process.env.DLD_PASSWORD;if(!u||!p)return{status:'missing_credentials'};await ensureSession();await selectBestPage();
   if(page&&page.url()!=='about:blank'){const existing=await detectState();if(['session_active','real_estate_admin_profile_selected','uae_pass','uae_pass_approval_required','captcha_required','login_form'].includes(existing.status))return existing;}
   await page.goto(DLD_URL,{waitUntil:'domcontentloaded',timeout:45000});await page.waitForTimeout(3000);
-  const body=await pageText(page);if(body.includes('dld application dashboard')){if(body.includes('trakheesi')&&body.includes('login with uae pass'))return clickTrakheesi();await saveSession();return{status:'session_active',url:page.url()};}
+  const body=await pageText(page);if(body.includes('dld application dashboard')){if(body.includes('trakheesi'))return clickTrakheesi();await saveSession();return{status:'session_active',url:page.url()};}
   const user=await firstVisible(page,['input[name="username"]','input[name="Username"]','input[type="text"][placeholder*="user" i]','input[type="email"]','input[type="text"]']);
   const pass=await firstVisible(page,['input[type="password"]']);if(!user||!pass)return{status:'login_form_not_found',url:page.url()};await user.fill(u);await pass.fill(p);return detectState();
 }
 
-export async function continueAfterCaptcha(){if(!page||page.isClosed())return{status:'no_active_session'};try{await selectBestPage();const m=await handleUaePassModal();if(m)return m;const raw=await page.locator('body').innerText({timeout:5000}).catch(()=>''),body=raw.toLowerCase();if(body.includes('dld application dashboard')&&body.includes('trakheesi')){if(body.includes('login with uae pass'))return clickTrakheesi();return{status:'session_active',url:page.url()};}if(/multiple profiles found/i.test(raw))return selectAdmin();if(body.includes('login to uae pass')||body.includes('emirates id, email, or phone'))return detectState();const btn=await firstVisible(page,['button:has-text("Sign In")','input[type="submit"]','button[type="submit"]']);if(btn){await btn.click({noWaitAfter:true});await page.waitForTimeout(4000);}return detectState();}catch(error){return{status:'continue_error',message:error.message,url:page?.url?.()||''};}}
+export async function continueAfterCaptcha(){if(!page||page.isClosed())return{status:'no_active_session'};try{await selectBestPage();const m=await handleUaePassModal();if(m)return m;const raw=await page.locator('body').innerText({timeout:5000}).catch(()=>''),body=raw.toLowerCase();if(body.includes('dld application dashboard')&&body.includes('trakheesi'))return clickTrakheesi();if(/multiple profiles found/i.test(raw))return selectAdmin();if(body.includes('login to uae pass')||body.includes('emirates id, email, or phone'))return detectState();const btn=await firstVisible(page,['button:has-text("Sign In")','input[type="submit"]','button[type="submit"]']);if(btn){await btn.click({noWaitAfter:true});await page.waitForTimeout(4000);}return detectState();}catch(error){return{status:'continue_error',message:error.message,url:page?.url?.()||''};}}
 export async function continueUaePassLogin(){if(!page||page.isClosed())return{status:'no_active_session'};try{return await submitUaePassId();}catch(error){return{status:'uae_pass_error',message:error.message,url:page?.url?.()||''};}}
 export async function checkUaePassStatus(){if(!page||page.isClosed())return{status:'no_active_session'};try{await page.waitForTimeout(1000);const s=await detectState();if(['session_active','real_estate_admin_profile_selected'].includes(s.status))await saveSession();return s;}catch(error){return{status:'uae_pass_check_error',message:error.message,url:page?.url?.()||''};}}
 export async function testDldLogin(){try{return await startInteractiveDldLogin();}catch(error){return{status:'agent_error',message:error.message};}}
