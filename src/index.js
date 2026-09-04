@@ -16,7 +16,9 @@ async function telegram(method, body = {}) {
   });
 
   const data = await response.json();
-  if (!data.ok) throw new Error(`${method} failed: ${JSON.stringify(data)}`);
+  if (!data.ok) {
+    throw new Error(`${method} failed (${data.error_code || response.status}): ${data.description || 'Unknown Telegram error'}`);
+  }
   return data.result;
 }
 
@@ -30,6 +32,8 @@ async function handleUpdate(update) {
 
   const chatId = message.chat.id;
   const command = message.text.trim().split(/\s+/)[0].split('@')[0];
+
+  console.log(`Received ${command} from chat ${chatId}`);
 
   if (command === '/start') {
     await sendMessage(
@@ -47,7 +51,17 @@ async function handleUpdate(update) {
   }
 }
 
+async function startup() {
+  const me = await telegram('getMe');
+  console.log(`Connected to Telegram as @${me.username} (${me.id})`);
+
+  // Long polling cannot work while a webhook is configured.
+  await telegram('deleteWebhook', { drop_pending_updates: false });
+  console.log('Telegram webhook cleared; starting long polling');
+}
+
 async function poll() {
+  await startup();
   console.log('JnA Permit Bot is running');
 
   while (true) {
