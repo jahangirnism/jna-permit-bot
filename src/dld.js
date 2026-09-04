@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const DLD_URL='https://dubailand.gov.ae/en/MyDLD/#/login/sso';
+const SECONDARY_PERMIT='150273';
 const LOCAL_ROOT=process.env.JNA_LOCAL_DATA_DIR||path.join(os.homedir(),'.jna-permit-bot');
 const PROFILE_DIR=process.env.DLD_PROFILE_DIR||path.join(LOCAL_ROOT,'chrome-profile');
 const SESSION_PATH=process.env.DLD_SESSION_PATH||path.join(LOCAL_ROOT,'dld-storage.json');
@@ -13,6 +14,30 @@ async function firstVisible(p,selectors){for(const s of selectors){const l=p.loc
 async function pageText(p){return(await p.locator('body').innerText({timeout:2500}).catch(()=>'' )).toLowerCase();}
 async function saveSession(){try{fs.mkdirSync(path.dirname(SESSION_PATH),{recursive:true});await context.storageState({path:SESSION_PATH});}catch(e){console.error('Could not save session:',e.message);}}
 function clearLocks(){for(const n of['SingletonLock','SingletonSocket','SingletonCookie']){try{fs.rmSync(path.join(PROFILE_DIR,n),{force:true});}catch{}}}
+async function clickText(text,exact=true){const l=page.getByText(text,{exact}).first();if(await l.isVisible({timeout:5000}).catch(()=>false)){await l.click({force:true});return true;}return false;}
+async function clickRadioLabel(label){
+  const byLabel=page.getByLabel(new RegExp(`^${label}$`,'i')).first();if(await byLabel.count().catch(()=>0)){await byLabel.check({force:true}).catch(()=>byLabel.click({force:true}));return true;}
+  const text=page.getByText(new RegExp(`^${label}$`,'i')).first();if(await text.isVisible({timeout:4000}).catch(()=>false)){await text.click({force:true});return true;}
+  return false;
+}
+async function inputNearLabel(label){
+  const lab=page.getByText(new RegExp(`^${label}\\s*\\*?$`,'i')).first();
+  if(await lab.count().catch(()=>0)){
+    const container=lab.locator('xpath=ancestor::*[self::div or self::td or self::label][1]');
+    let input=container.locator('input,textarea').first();if(await input.count())return input;
+    input=lab.locator('xpath=following::input[1]');if(await input.count())return input;
+  }
+  return null;
+}
+async function selectArea(area){
+  const lab=page.getByText(/Select Area/i).first();
+  const native=lab.locator('xpath=following::select[1]');
+  if(await native.count().catch(()=>0)){try{await native.selectOption({label:area});return true;}catch{}}
+  const box=lab.locator('xpath=following::*[self::button or @role="combobox" or contains(@class,"select")][1]');
+  if(await box.count().catch(()=>0)){await box.click({force:true}).catch(()=>{});const opt=page.getByText(new RegExp(`^${area}$`,'i')).last();if(await opt.isVisible({timeout:3000}).catch(()=>false)){await opt.click({force:true});return true;}}
+  const allText=page.getByText(new RegExp(`^${area}$`,'i')).last();if(await allText.isVisible({timeout:2000}).catch(()=>false)){await allText.click({force:true});return true;}
+  return false;
+}
 
 async function ensureSession(){
   if(context&&page&&!page.isClosed())return;
@@ -25,7 +50,8 @@ async function selectBestPage(){
   if(!context)return false;const pages=context.pages().filter(p=>!p.isClosed());if(!pages.length)return false;
   const scored=[];
   for(const p of pages){const url=(p.url()||'').toLowerCase(),text=await pageText(p);let score=0;
-    if(text.includes('multiple profiles found')||text.includes('real estate office admin'))score=100;
+    if(url.includes('trakheesi.dubailand.gov.ae'))score=110;
+    else if(text.includes('multiple profiles found')||text.includes('real estate office admin'))score=100;
     else if(text.includes('dld application dashboard')||text.includes('trakheesi'))score=90;
     else if(text.includes('login to uae pass')||text.includes('emirates id, email, or phone')||url.includes('uaepass'))score=80;
     else if(text.includes("i'm not a robot")||text.includes('recaptcha'))score=70;
@@ -69,7 +95,7 @@ async function detectState(){
   const captcha=text.includes("i'm not a robot")||text.includes('recaptcha')||(await page.locator('iframe[src*="recaptcha"],iframe[title*="recaptcha" i]').count().catch(()=>0))>0;if(captcha)return{status:'captcha_required',url};
   if(text.includes('login to uae pass')||text.includes('emirates id, email, or phone')||url.toLowerCase().includes('uaepass'))return{status:'uae_pass',url};
   const modal=await handleUaePassModal().catch(()=>null);if(modal)return modal;
-  if(text.includes('dld application dashboard')||text.includes('trakheesi')){await saveSession();return{status:'session_active',url};}
+  if(text.includes('dld application dashboard')||text.includes('trakheesi')||url.includes('trakheesi.dubailand.gov.ae')){await saveSession();return{status:'session_active',url};}
   if(text.includes('authentication code'))return{status:'authentication_code',url};
   if(await page.locator('input[type="password"]').count().catch(()=>0))return{status:'login_form',url};
   return{status:'post_login_unknown',url,title:await page.title().catch(()=>'' )};
@@ -87,6 +113,70 @@ async function clickTrakheesi(){
   const t=page.getByText('Trakheesi',{exact:true}).first();if(!(await t.isVisible({timeout:5000}).catch(()=>false)))return{status:'trakheesi_not_found',url:page.url()};
   const card=t.locator('xpath=ancestor::*[.//button or .//a][1]');let btn=card.getByRole('button',{name:/login with uae pass/i}).first();if(!(await btn.isVisible().catch(()=>false)))btn=card.getByText(/login with uae pass/i).first();if(!(await btn.isVisible().catch(()=>false)))return{status:'trakheesi_uae_pass_button_not_found',url:page.url()};
   await btn.click({noWaitAfter:true});await page.waitForTimeout(1000);const m=await handleUaePassModal();return m||detectState();
+}
+
+async function openSecondaryPermitEdit(){
+  await ensureSession();await selectBestPage();
+  if(!page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'trakheesi_session_required',url:page.url()};
+  if(await page.getByText('Permit',{exact:true}).first().isVisible({timeout:2500}).catch(()=>false)){await page.getByText('Permit',{exact:true}).first().click({force:true});await page.waitForTimeout(2000);}
+  const permitText=page.getByText(SECONDARY_PERMIT,{exact:true}).first();if(!(await permitText.isVisible({timeout:5000}).catch(()=>false)))return{status:'secondary_permit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  const card=permitText.locator('xpath=ancestor::*[.//*[contains(normalize-space(.),"Electronic Advertisement")]][1]');
+  const menuCandidates=card.locator('button,a,[role="button"]');let menu=null;
+  for(let i=0;i<await menuCandidates.count();i++){const el=menuCandidates.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))).trim();if(txt==='...'||/more|menu|ellipsis|action/i.test(txt)){menu=el;break;}}
+  if(!menu){menu=card.locator('button').last();if(!(await menu.count()))return{status:'permit_menu_not_found',permit:SECONDARY_PERMIT,url:page.url()};}
+  await menu.click({force:true});
+  const edit=page.getByText('Edit',{exact:true}).last();if(!(await edit.isVisible({timeout:3000}).catch(()=>false)))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
+  await edit.click({force:true});await page.waitForTimeout(2500);
+  const tx=await page.locator('body').innerText().catch(()=>'' );if(!tx.includes(SECONDARY_PERMIT))return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,url:page.url()};
+  return{status:'secondary_permit_edit_open',url:page.url()};
+}
+
+export async function prepareSecondaryListing(payload={}){
+  try{
+    const {purpose,propertyType,deed={}}=payload;
+    if(!['RENT','SALE'].includes(purpose))return{status:'invalid_listing_purpose'};
+    if(!['LAND','BUILDING','VILLA','UNIT'].includes(propertyType))return{status:'invalid_property_type'};
+    if(propertyType!=='UNIT')return{status:'property_type_not_mapped',propertyType};
+    for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};
+    const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;
+    const add=page.getByText('Add Property/Project',{exact:true}).first();if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};
+    await add.click({force:true});await page.waitForTimeout(800);
+    if(!(await clickRadioLabel('Property')))return{status:'listing_type_property_not_found',url:page.url()};
+    if(!(await clickRadioLabel(purpose==='RENT'?'Rent':'Sell')))return{status:'listing_purpose_not_found',url:page.url()};
+    const proceed=page.getByText('Proceed',{exact:true}).first();if(!(await proceed.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};
+    await proceed.click({force:true});await page.waitForTimeout(900);
+    if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};
+    if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
+    const land=await inputNearLabel('Land No'),building=await inputNearLabel('Building Name'),unit=await inputNearLabel('Unit No');
+    if(!land||!building||!unit)return{status:'property_search_fields_not_found',url:page.url()};
+    await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));
+    const municipality=await inputNearLabel('Municipality No');if(municipality)await municipality.fill('');
+    const search=page.getByText('Search',{exact:true}).last();if(!(await search.isVisible({timeout:3000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};
+    await search.click({force:true});await page.waitForTimeout(1800);
+    const rows=page.locator('table tr');let match=null;
+    for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt)continue;const normalized=txt.toLowerCase();if(normalized.includes(String(deed.unitNo).toLowerCase())&&normalized.includes(String(deed.buildingName).toLowerCase())&&normalized.includes(String(deed.area).toLowerCase())){match=row;break;}}
+    if(!match)return{status:'property_exact_match_not_found',expected:{unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area},url:page.url()};
+    await match.click({force:true});await page.waitForTimeout(700);
+    const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};
+    return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,url:page.url()};
+  }catch(error){return{status:'prepare_listing_error',message:error.message,url:page?.url?.()||''};}
+}
+
+export async function finalizeSecondaryListing(payload={}){
+  try{
+    if(!page||page.isClosed())return{status:'no_active_session'};
+    const {value,marketingContract,advertisementFormat}=payload;
+    if(!value||!marketingContract?.path||!advertisementFormat?.path)return{status:'listing_inputs_missing'};
+    const valueInput=await inputNearLabel('Value');if(!valueInput)return{status:'value_field_not_found',url:page.url()};await valueInput.fill(String(value));
+    const rows=page.locator('table tr');let marketingInput=null,adInput=null;
+    for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).toLowerCase();if(txt.includes('marketing contract from the owner'))marketingInput=row.locator('input[type="file"]').first();if(txt.includes('copy of the advertisement format'))adInput=row.locator('input[type="file"]').first();}
+    if(!marketingInput||!(await marketingInput.count())||!adInput||!(await adInput.count()))return{status:'document_upload_fields_not_found',url:page.url()};
+    await marketingInput.setInputFiles(marketingContract.path);await adInput.setInputFiles(advertisementFormat.path);
+    const announcement=await inputNearLabel('Announcement Text');if(announcement)await announcement.fill('');
+    const save=page.getByText('Save',{exact:true}).last();if(!(await save.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_save_button_not_found',url:page.url()};
+    await save.click({force:true});await page.waitForTimeout(2500);await saveSession();
+    return{status:'listing_saved',permit:SECONDARY_PERMIT,url:page.url(),message:(await page.locator('body').innerText().catch(()=>'' )).slice(0,1200)};
+  }catch(error){return{status:'finalize_listing_error',message:error.message,url:page?.url?.()||''};}
 }
 
 export async function startInteractiveDldLogin(){
