@@ -27,13 +27,19 @@ export async function testDldLogin() {
     await page.waitForTimeout(4000);
 
     const userInput = await firstVisible(page, [
-      'input[name="username"]', 'input[name="Username"]',
-      'input[id*="user" i]', 'input[placeholder*="user" i]',
+      'input[name="username"]:not([type="radio"]):not([type="checkbox"])',
+      'input[name="Username"]:not([type="radio"]):not([type="checkbox"])',
+      'input[type="text"][id*="user" i]',
+      'input[type="text"][placeholder*="user" i]',
+      'input[type="email"]',
       'input[type="text"]'
     ]);
+
     const passInput = await firstVisible(page, [
-      'input[name="password"]', 'input[name="Password"]',
-      'input[id*="pass" i]', 'input[placeholder*="pass" i]',
+      'input[type="password"][name="password"]',
+      'input[type="password"][name="Password"]',
+      'input[type="password"][id*="pass" i]',
+      'input[type="password"][placeholder*="pass" i]',
       'input[type="password"]'
     ]);
 
@@ -57,9 +63,12 @@ export async function testDldLogin() {
     }
 
     const signIn = await firstVisible(page, [
-      'button:has-text("Sign In")', 'button:has-text("Login")',
-      'input[type="submit"]', 'button[type="submit"]'
+      'button:has-text("Sign In")',
+      'button:has-text("Login")',
+      'input[type="submit"]',
+      'button[type="submit"]'
     ]);
+
     if (!signIn) return { status: 'signin_button_not_found', url: page.url() };
 
     await signIn.click();
