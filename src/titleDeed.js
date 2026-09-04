@@ -16,17 +16,37 @@ function run(cmd,args,{timeout=45000}={}){
 }
 
 function clean(v){return (v||'').replace(/\s+/g,' ').replace(/^[\s:;|_-]+|[\s:;|_-]+$/g,'').trim();}
+
+// DLD Title Deeds are commonly bilingual. Keep only the English/ASCII value
+// and stop when the Arabic column or obvious OCR spillover begins.
+function englishOnly(v,{identifier=false}={}){
+  let s=String(v||'');
+  s=s.split(/[\u0600-\u06FF]/)[0];
+  s=s.split(/[_\[\]{}()<>]/)[0];
+  s=s.replace(/[^\x20-\x7E]/g,' ');
+  if(identifier){
+    const token=s.match(/[A-Za-z0-9][A-Za-z0-9\/-]*/)?.[0]||'';
+    return clean(token);
+  }
+  s=s.replace(/[^A-Za-z0-9&.'\/-]+/g,' ');
+  return clean(s);
+}
+
 function lineValue(text,label,nextLabels=[]){
-  const lines=text.split(/\r?\n/).map(clean).filter(Boolean);
-  const rx=new RegExp(`^${label}\\s*[:.-]?\\s*(.*)$`,'i');
-  for(let i=0;i<lines.length;i++){
-    const m=lines[i].match(rx);
+  const rawLines=text.split(/\r?\n/).filter(x=>x.trim());
+  const rx=new RegExp(`^\\s*${label}\\s*[:.-]?\\s*(.*)$`,'i');
+  for(let i=0;i<rawLines.length;i++){
+    const m=rawLines[i].match(rx);
     if(!m)continue;
-    let value=clean(m[1]);
+    // With pdftotext -layout, bilingual columns are usually separated by
+    // multiple spaces. Take the first (English) column before collapsing spaces.
+    let rawValue=(m[1]||'').split(/\s{2,}/)[0];
+    let value=clean(rawValue);
     if(value)return value;
-    if(i+1<lines.length){
-      const n=lines[i+1];
-      if(!nextLabels.some(x=>new RegExp(`^${x}\\b`,'i').test(n)))return clean(n);
+    if(i+1<rawLines.length){
+      const n=rawLines[i+1];
+      const trimmed=clean(n);
+      if(!nextLabels.some(x=>new RegExp(`^${x}\\b`,'i').test(trimmed)))return clean(n.split(/\s{2,}/)[0]);
     }
   }
   return '';
@@ -39,7 +59,6 @@ export function extractTitleDeedFields(text){
   let buildingName=lineValue(text,'Building\\s*Name',labels);
   let propertyNo=lineValue(text,'Property\\s*No',labels);
 
-  // Conservative fallback for OCR that separates label/value with unusual spacing.
   const one=text.replace(/\r/g,'');
   const capture=(name,next)=>{
     const r=new RegExp(`${name}\\s*[:.-]?\\s*([^\\n]{1,80}?)(?=\\s{2,}|\\n|${next}|$)`,'i');
@@ -50,12 +69,10 @@ export function extractTitleDeedFields(text){
   if(!buildingName)buildingName=capture('Building\\s*Name','Property\\s*No');
   if(!propertyNo)propertyNo=capture('Property\\s*No','Floor\\s*No');
 
-  // Strip common Arabic/OCR spillover after the English value where possible.
-  const englishPart=v=>clean(v.split(/[\u0600-\u06FF]/)[0]);
-  community=englishPart(community);
-  buildingName=englishPart(buildingName);
-  plotNo=clean(plotNo.match(/[A-Za-z0-9\/-]+/)?.[0]||plotNo);
-  propertyNo=clean(propertyNo.match(/[A-Za-z0-9][A-Za-z0-9\/-]*/)?.[0]||propertyNo);
+  community=englishOnly(community);
+  buildingName=englishOnly(buildingName);
+  plotNo=englishOnly(plotNo,{identifier:true});
+  propertyNo=englishOnly(propertyNo,{identifier:true});
 
   return {
     area: community || null,
