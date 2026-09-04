@@ -1,4 +1,4 @@
-import { testDldLogin } from './dld.js';
+import { testDldLogin, continueAfterCaptcha } from './dld.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -23,19 +23,33 @@ async function telegram(method, body = {}) {
 }
 
 async function sendMessage(chatId, text) {
-  return telegram('sendMessage', { chat_id: chatId, text });
+  return telegram('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true });
 }
 
 function resultMessage(result) {
   switch (result.status) {
-    case 'missing_credentials': return 'DLD test cannot start. Add DLD_USERNAME and DLD_PASSWORD in Railway Variables first.';
-    case 'captcha_required': return 'DLD login page reached. Username/password were filled, but the “I’m not a robot” CAPTCHA requires manual completion. This confirms the CAPTCHA checkpoint.';
-    case 'authentication_code': return 'DLD accepted the first login step and reached an authentication-code screen.';
-    case 'uae_pass': return 'DLD accepted the first login step and reached UAE PASS authentication.';
-    case 'login_form_not_found': return `DLD opened, but the login form was not detected. Page: ${result.url || 'unknown'}`;
-    case 'signin_button_not_found': return 'DLD credentials fields were detected, but the Sign In button was not detected.';
-    case 'post_login_unknown': return `DLD submitted the login form and reached a new screen that still needs mapping. Page: ${result.url || 'unknown'}`;
-    default: return `DLD login test error: ${result.message || result.status || 'unknown error'}`;
+    case 'missing_credentials':
+      return 'DLD test cannot start. Add DLD_USERNAME and DLD_PASSWORD in Railway Variables first.';
+    case 'missing_vnc_password':
+      return 'Interactive browser is not enabled yet. Add VNC_PASSWORD in Railway Variables, redeploy, then run /testlogin again.';
+    case 'captcha_required': {
+      const link = result.browserUrl ? `\n\nOpen browser: ${result.browserUrl}` : '\n\nRailway public domain was not detected. Add BROWSER_PUBLIC_URL in Railway Variables.';
+      return `DLD login page is ready. Username/password are filled.\n\n1. Open the browser link below.\n2. Enter your VNC password if asked.\n3. Tick “I’m not a robot”.\n4. Return to Telegram and send /continue.${link}`;
+    }
+    case 'authentication_code':
+      return 'CAPTCHA/login submitted successfully. DLD has reached the authentication-code screen.';
+    case 'uae_pass':
+      return 'CAPTCHA/login submitted successfully. DLD has reached UAE PASS authentication.';
+    case 'no_active_session':
+      return 'There is no active DLD browser session. Send /testlogin first.';
+    case 'login_form_not_found':
+      return `DLD opened, but the login form was not detected. Page: ${result.url || 'unknown'}`;
+    case 'signin_button_not_found':
+      return 'The active DLD page is open, but the Sign In button was not detected.';
+    case 'post_login_unknown':
+      return `DLD moved to a new screen that still needs mapping. Page: ${result.url || 'unknown'}`;
+    default:
+      return `DLD login test error: ${result.message || result.status || 'unknown error'}`;
   }
 }
 
@@ -46,7 +60,7 @@ async function runLoginTest(chatId) {
   }
   loginTestRunning = true;
   try {
-    await sendMessage(chatId, 'Starting DLD login test…');
+    await sendMessage(chatId, 'Starting DLD interactive login test…');
     const result = await testDldLogin();
     console.log('DLD test status:', result.status, result.url || '');
     await sendMessage(chatId, resultMessage(result));
@@ -63,15 +77,22 @@ async function handleUpdate(update) {
   console.log(`Received ${command} from chat ${chatId}`);
 
   if (command === '/start') {
-    await sendMessage(chatId, 'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a new Trakheesi permit request.\nUse /testlogin to test the DLD login connection.');
+    await sendMessage(chatId, 'Welcome to JnA Permit Bot.\n\nUse /testlogin to start the DLD login test.\nAfter manually completing CAPTCHA in the browser, send /continue.');
     return;
   }
   if (command === '/testlogin') {
     await runLoginTest(chatId);
     return;
   }
+  if (command === '/continue') {
+    await sendMessage(chatId, 'Continuing the active DLD login session…');
+    const result = await continueAfterCaptcha();
+    console.log('DLD continue status:', result.status, result.url || '');
+    await sendMessage(chatId, resultMessage(result));
+    return;
+  }
   if (command === '/newpermit') {
-    await sendMessage(chatId, 'New Permit Request\n\nStep 1: checking DLD login connection.');
+    await sendMessage(chatId, 'New Permit Request\n\nStep 1: opening the DLD login session.');
     await runLoginTest(chatId);
   }
 }
