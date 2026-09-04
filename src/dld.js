@@ -20,26 +20,27 @@ export async function startInteractiveDldLogin(){const u=process.env.DLD_USERNAM
 export async function continueAfterCaptcha(){
   if(!page||page.isClosed())return{status:'no_active_session'};
 
-  // If the user already clicked Sign In manually, continue from the page we are on.
-  let state=await detectState();
-  if(state.status!=='captcha_required' && state.status!=='login_form'){
-    if(state.status==='session_active'){
-      const body=(await page.locator('body').innerText().catch(()=>'' )).toLowerCase();
-      if(body.includes('trakheesi')&&body.includes('login with uae pass')) return clickTrakheesiUaePass();
-    }
-    return state;
-  }
+  const raw=(await page.locator('body').innerText().catch(()=>''));
+  const body=raw.toLowerCase();
 
+  // The CAPTCHA iframe/text can remain in the DOM even after it has been solved.
+  // If the user already clicked Sign In and reached the DLD dashboard, continue directly.
+  if(body.includes('dld application dashboard') && body.includes('trakheesi')){
+    if(body.includes('login with uae pass')) return clickTrakheesiUaePass();
+    await saveSession();
+    return{status:'session_active',url:page.url()};
+  }
+  if(/multiple profiles found/i.test(raw)) return selectRealEstateAdminProfile();
+  if(body.includes('login to uae pass')||body.includes('continue with uae pass')||body.includes('uaepass')) return detectState();
+
+  // Otherwise, if Sign In is still visible, click it. This covers a manually solved CAPTCHA.
   const btn=await firstVisible(page,['button:has-text("Sign In")','button:has-text("Login")','input[type="submit"]','button[type="submit"]']);
-  if(!btn){
-    await page.waitForTimeout(1500);
-    return detectState();
-  }
-
+  if(!btn){await page.waitForTimeout(1500);return detectState();}
   await btn.click();
   await page.waitForTimeout(6000);
-  const body=(await page.locator('body').innerText().catch(()=>'' )).toLowerCase();
-  if(body.includes('trakheesi')&&body.includes('login with uae pass'))return clickTrakheesiUaePass();
+
+  const after=(await page.locator('body').innerText().catch(()=>'' )).toLowerCase();
+  if(after.includes('dld application dashboard')&&after.includes('trakheesi')&&after.includes('login with uae pass'))return clickTrakheesiUaePass();
   return detectState();
 }
 export async function continueUaePassLogin(){if(!page||page.isClosed())return{status:'no_active_session'};return submitUaePassId();}
