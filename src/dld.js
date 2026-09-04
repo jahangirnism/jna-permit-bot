@@ -34,20 +34,68 @@ async function ensureSession() {
   page.setDefaultTimeout(15000);
 }
 
+function extractUaePassChallenge(text) {
+  const patterns = [
+    /(?:number|code|match|matching|shown|displayed)[^0-9]{0,40}([0-9]{2,3})/i,
+    /([0-9]{2,3})[^0-9]{0,40}(?:number|code|match|matching)/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 async function detectState() {
   const url = page.url();
-  const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+  const bodyRaw = await page.locator('body').innerText().catch(() => '');
+  const bodyText = bodyRaw.toLowerCase();
   const captcha = bodyText.includes("i'm not a robot") || bodyText.includes('recaptcha') ||
     (await page.locator('iframe[src*="recaptcha"], iframe[title*="recaptcha" i]').count().catch(() => 0)) > 0;
 
+  const challenge = extractUaePassChallenge(bodyRaw);
+  if (challenge) return { status: 'uae_pass_approval_required', challenge, url, browserUrl: browserUrl() };
   if (bodyText.includes('authentication code')) return { status: 'authentication_code', url };
-  if (bodyText.includes('uae pass') || bodyText.includes('uaepass')) return { status: 'uae_pass', url };
+  if (bodyText.includes('uae pass') || bodyText.includes('uaepass')) return { status: 'uae_pass', url, browserUrl: browserUrl() };
   if (captcha) return { status: 'captcha_required', url, browserUrl: browserUrl() };
 
   const passField = await firstVisible(page, ['input[type="password"]']);
   if (passField) return { status: 'login_form', url };
 
   return { status: 'post_login_unknown', url, title: await page.title().catch(() => '') };
+}
+
+async function submitUaePassId() {
+  const emiratesId = process.env.UAE_PASS_EMIRATES_ID;
+  if (!emiratesId) {
+    return { status: 'uae_pass_id_required', url: page.url(), browserUrl: browserUrl() };
+  }
+
+  const idInput = await firstVisible(page, [
+    'input[placeholder*="Emirates ID" i]',
+    'input[aria-label*="Emirates ID" i]',
+    'input[name*="emirates" i]',
+    'input[id*="emirates" i]',
+    'input[placeholder*="ID" i]',
+    'input[type="text"]',
+    'input[type="tel"]'
+  ]);
+
+  if (!idInput) return { status: 'uae_pass_id_field_not_found', url: page.url(), browserUrl: browserUrl() };
+
+  await idInput.fill(emiratesId);
+
+  const loginButton = await firstVisible(page, [
+    'button:has-text("Login")',
+    'button:has-text("Sign in")',
+    'button[type="submit"]',
+    'input[type="submit"]'
+  ]);
+  if (!loginButton) return { status: 'uae_pass_login_button_not_found', url: page.url(), browserUrl: browserUrl() };
+
+  await loginButton.click();
+  await page.waitForTimeout(5000);
+  return detectState();
 }
 
 async function clickTrakheesiUaePass() {
@@ -75,7 +123,7 @@ async function clickTrakheesiUaePass() {
 
   await loginButton.click();
   await page.waitForTimeout(5000);
-  return detectState();
+  return submitUaePassId();
 }
 
 export async function startInteractiveDldLogin() {
@@ -138,6 +186,17 @@ export async function continueAfterCaptcha() {
 export async function clickTrakheesiLogin() {
   if (!page || page.isClosed()) return { status: 'no_active_session' };
   return clickTrakheesiUaePass();
+}
+
+export async function continueUaePassLogin() {
+  if (!page || page.isClosed()) return { status: 'no_active_session' };
+  return submitUaePassId();
+}
+
+export async function checkUaePassStatus() {
+  if (!page || page.isClosed()) return { status: 'no_active_session' };
+  await page.waitForTimeout(1500);
+  return detectState();
 }
 
 export async function testDldLogin() {
