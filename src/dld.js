@@ -37,32 +37,41 @@ async function openSecondaryPermitEdit(){
   const permitNav=page.getByText('Permit',{exact:true}).first();
   if(await permitNav.isVisible({timeout:5000}).catch(()=>false))await permitNav.click({force:true});
   await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:12000}).catch(()=>{});
-  const cards=page.locator('div').filter({hasText:new RegExp(`Permit\\s*Number[\\s\\S]*${SECONDARY_PERMIT}`)});
-  let card=null;
-  for(let i=0;i<await cards.count();i++){
-    const candidate=cards.nth(i),txt=(await candidate.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
-    if(!new RegExp(`Permit\\s*Number\\s*${SECONDARY_PERMIT}(?:\\s|$)`,'i').test(txt)||!/Electronic Advertisement/i.test(txt))continue;
-    if(await candidate.locator('button,a,[role="button"]').count().catch(()=>0)){card=candidate;break;}
-  }
-  if(!card)return{status:'secondary_permit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
-  const menuCandidates=card.locator('button,a,[role="button"]');let menu=null;
-  for(let i=0;i<await menuCandidates.count();i++){const el=menuCandidates.nth(i);if(!(await el.isVisible().catch(()=>false)))continue;const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))).trim();if(txt==='...'||/more|menu|ellipsis|action/i.test(txt)){menu=el;break;}}
-  if(!menu){for(let i=(await menuCandidates.count())-1;i>=0;i--){const el=menuCandidates.nth(i);if(await el.isVisible().catch(()=>false)){menu=el;break;}}}
-  if(!menu)return{status:'permit_menu_not_found',permit:SECONDARY_PERMIT,url:page.url()};
-  await menu.click({force:true});await page.waitForTimeout(500);
 
-  // Trakheesi renders Edit as an ASP.NET LinkButton anchor. Target the
-  // actual anchor inside the already-verified 150273 card instead of its span text.
-  const edit=card.locator('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]').first();
-  if(!(await edit.count().catch(()=>0)))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
-  const title=(await edit.getAttribute('title').catch(()=>''))||'';
-  const label=(await edit.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
-  if(title!=='Edit Permit'&&!/^Edit$/i.test(label))return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url()};
-  await edit.evaluate(el=>el.click());
+  // Bind the Edit action to the smallest DOM container that actually contains
+  // Permit Number 150273. This avoids a large wrapper accidentally selecting
+  // the Edit link for permit 153912.
+  const result=await page.evaluate(permit=>{
+    const norm=s=>(s||'').replace(/\s+/g,' ').trim();
+    const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');
+    const editLinks=[...document.querySelectorAll('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]')];
+    const candidates=[];
+    for(const link of editLinks){
+      let node=link;
+      for(let depth=0;depth<12&&node;depth++,node=node.parentElement){
+        const text=norm(node.innerText||node.textContent);
+        if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){
+          candidates.push({link,node,depth,textLength:text.length});
+          break;
+        }
+      }
+    }
+    candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);
+    const chosen=candidates[0];
+    if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};
+    const text=norm(chosen.node.innerText||chosen.node.textContent);
+    if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};
+    chosen.link.click();
+    return{clicked:true,id:chosen.link.id,href:chosen.link.getAttribute('href')||''};
+  },SECONDARY_PERMIT).catch(error=>({clicked:false,reason:error.message}));
+  if(!result?.clicked)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:result?.reason||'unknown'};
+
   await page.waitForTimeout(2500);
-  const tx=await page.locator('body').innerText().catch(()=>'' );
-  if(!tx.includes(SECONDARY_PERMIT))return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,url:page.url()};
-  return{status:'secondary_permit_edit_open',url:page.url()};
+  const txRaw=await page.locator('body').innerText().catch(()=>'' );
+  const txMatch=txRaw.match(/Transaction\s*#\s*([0-9]+)/i);
+  const actualTx=txMatch?.[1]||null;
+  if(actualTx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:actualTx,url:page.url()};
+  return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};
 }
 
 export async function prepareSecondaryListing(payload={}){try{const {purpose,propertyType,deed={}}=payload;if(!['RENT','SALE'].includes(purpose))return{status:'invalid_listing_purpose'};if(!['LAND','BUILDING','VILLA','UNIT'].includes(propertyType))return{status:'invalid_property_type'};if(propertyType!=='UNIT')return{status:'property_type_not_mapped',propertyType};for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;const add=page.getByText('Add Property/Project',{exact:true}).first();if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};await add.click({force:true});await page.waitForTimeout(800);if(!(await clickRadioLabel('Property')))return{status:'listing_type_property_not_found',url:page.url()};if(!(await clickRadioLabel(purpose==='RENT'?'Rent':'Sell')))return{status:'listing_purpose_not_found',url:page.url()};const proceed=page.getByText('Proceed',{exact:true}).first();if(!(await proceed.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_proceed_not_found',url:page.url()};await proceed.click({force:true});await page.waitForTimeout(900);if(!(await clickText('Unit',true)))return{status:'unit_tab_not_found',url:page.url()};if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};const land=await inputNearLabel('Land No'),building=await inputNearLabel('Building Name'),unit=await inputNearLabel('Unit No');if(!land||!building||!unit)return{status:'property_search_fields_not_found',url:page.url()};await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));const municipality=await inputNearLabel('Municipality No');if(municipality)await municipality.fill('');const search=page.getByText('Search',{exact:true}).last();if(!(await search.isVisible({timeout:3000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};await search.click({force:true});await page.waitForTimeout(1800);const rows=page.locator('table tr');let match=null;for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt)continue;const normalized=txt.toLowerCase();if(normalized.includes(String(deed.unitNo).toLowerCase())&&normalized.includes(String(deed.buildingName).toLowerCase())&&normalized.includes(String(deed.area).toLowerCase())){match=row;break;}}if(!match)return{status:'property_exact_match_not_found',expected:{unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area},url:page.url()};await match.click({force:true});await page.waitForTimeout(700);const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,url:page.url()};}catch(error){return{status:'prepare_listing_error',message:error.message,url:page?.url?.()||''};}}
