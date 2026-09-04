@@ -21,13 +21,34 @@ async function materialize(file,label){
   return target;
 }
 
+const TRANSIENT_LISTING_STATES=new Set([
+  'listing_type_property_not_found',
+  'listing_purpose_not_found',
+  'listing_proceed_not_found'
+]);
+
+async function prepareListingWithRetry(payload){
+  // Trakheesi uses ASP.NET postbacks for Property and Rent/Sell. Those controls
+  // are destroyed and recreated during the postback, so a transient lookup can
+  // occasionally happen while the modal is rebuilding. Restart the complete,
+  // safety-checked prepare flow instead of continuing with a stale DOM element.
+  let result;
+  for(let attempt=1;attempt<=3;attempt++){
+    result=await prepareSecondaryListing(payload);
+    if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;
+    console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/3)`);
+    if(attempt<3)await new Promise(r=>setTimeout(r,1800));
+  }
+  return result;
+}
+
 async function execute(task){
   switch(task.type){
     case 'test_login': return testDldLogin();
     case 'continue': return continueAfterCaptcha();
     case 'uae_pass': return continueUaePassLogin();
     case 'check_uae_pass': return checkUaePassStatus();
-    case 'prepare_listing': return prepareSecondaryListing(task.payload||{});
+    case 'prepare_listing': return prepareListingWithRetry(task.payload||{});
     case 'finalize_listing': {
       let marketingPath,advertPath;
       try{
