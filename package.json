@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "agent": "node --env-file=.env.local src/local-agent.js"
   },
   "engines": {
     "node": ">=20"
