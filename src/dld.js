@@ -113,7 +113,35 @@ export async function prepareSecondaryListing(payload={}){try{
   if(!(await selectArea(deed.area)))return{status:'area_option_not_found',area:deed.area,url:page.url()};
   const land=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchLandNumberTextBox').first();const building=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchBuildingNameTextBox').first();const unit=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchPropertyTextBox').first();if(!(await land.count().catch(()=>0))||!(await building.count().catch(()=>0))||!(await unit.count().catch(()=>0)))return{status:'property_search_fields_not_found',url:page.url()};await land.fill(String(deed.landNo));await building.fill(String(deed.buildingName));await unit.fill(String(deed.unitNo));
   const search=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertiesTypes_BodyTemplateContainer_UCPropertiesTypes1_PropertyTabContainer_UnitTab_UCUnitDetails_SearchButton').first();if(!(await search.isVisible({timeout:5000}).catch(()=>false)))return{status:'property_search_button_not_found',url:page.url()};await search.click({force:true});await page.waitForTimeout(1800);
-  const rows=page.locator('table tr');let match=null;for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();if(!txt)continue;const normalized=txt.toLowerCase();if(normalized.includes(String(deed.unitNo).toLowerCase())&&normalized.includes(String(deed.buildingName).toLowerCase())&&normalized.includes(String(deed.area).toLowerCase())){match=row;break;}}if(!match)return{status:'property_exact_match_not_found',expected:{unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area},url:page.url()};await match.click({force:true});await page.waitForTimeout(700);const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,url:page.url()};
+
+  // DLD can return the correct unit while expanding the building name, e.g.
+  // title deed "EMPIRE HEIGHTS" -> DLD "EMPIRE HEIGHTS PODIUM". Do not reject
+  // the returned row only because building/area text is not an exact OCR match.
+  const resultHeading=page.getByText('Search Result',{exact:true}).first();
+  let resultTable=resultHeading.locator('xpath=following::table[1]');
+  if(!(await resultTable.count().catch(()=>0)))resultTable=page.locator('table').filter({hasText:String(deed.unitNo)}).last();
+  const resultRows=resultTable.locator('tr').filter({has:page.locator('td')});
+  const visibleRows=[];
+  for(let i=0;i<await resultRows.count().catch(()=>0);i++){
+    const row=resultRows.nth(i);
+    if(await row.isVisible().catch(()=>false))visibleRows.push(row);
+  }
+  if(!visibleRows.length)return{status:'property_search_no_results',url:page.url()};
+
+  const wantedUnit=String(deed.unitNo).trim().toLowerCase();
+  let match=null;
+  for(const row of visibleRows){
+    const firstCell=(await row.locator('td').first().innerText().catch(()=>'' )).replace(/\s+/g,' ').trim().toLowerCase();
+    if(firstCell===wantedUnit){match=row;break;}
+  }
+  // User preference: if DLD returns rows, use the first returned result when
+  // there is no exact first-column unit hit rather than failing on building text.
+  if(!match)match=visibleRows[0];
+
+  await match.click({force:true});await page.waitForTimeout(700);
+  const selectedText=(await match.innerText().catch(()=>'' )).replace(/\s+/g,' ').trim();
+  const value=await inputNearLabel('Value');if(!value)return{status:'property_selected_but_value_field_not_found',url:page.url()};
+  return{status:'property_selected',permit:SECONDARY_PERMIT,unitNo:deed.unitNo,buildingName:deed.buildingName,area:deed.area,selectedResult:selectedText,url:page.url()};
 }catch(error){return{status:'prepare_listing_error',message:error.message,url:page?.url?.()||''};}}
 export async function finalizeSecondaryListing(payload={}){try{if(!page||page.isClosed())return{status:'no_active_session'};const {value,marketingContract,advertisementFormat}=payload;if(!value||!marketingContract?.path||!advertisementFormat?.path)return{status:'listing_inputs_missing'};const valueInput=await inputNearLabel('Value');if(!valueInput)return{status:'value_field_not_found',url:page.url()};await valueInput.fill(String(value));const rows=page.locator('table tr');let marketingInput=null,adInput=null;for(let i=0;i<await rows.count();i++){const row=rows.nth(i),txt=(await row.innerText().catch(()=>'' )).toLowerCase();if(txt.includes('marketing contract from the owner'))marketingInput=row.locator('input[type="file"]').first();if(txt.includes('copy of the advertisement format'))adInput=row.locator('input[type="file"]').first();}if(!marketingInput||!(await marketingInput.count())||!adInput||!(await adInput.count()))return{status:'document_upload_fields_not_found',url:page.url()};await marketingInput.setInputFiles(marketingContract.path);await adInput.setInputFiles(advertisementFormat.path);const announcement=await inputNearLabel('Announcement Text');if(announcement)await announcement.fill('');const save=page.getByText('Save',{exact:true}).last();if(!(await save.isVisible({timeout:4000}).catch(()=>false)))return{status:'listing_save_button_not_found',url:page.url()};await save.click({force:true});await page.waitForTimeout(2500);await saveSession();return{status:'listing_saved',permit:SECONDARY_PERMIT,url:page.url(),message:(await page.locator('body').innerText().catch(()=>'' )).slice(0,1200)};}catch(error){return{status:'finalize_listing_error',message:error.message,url:page?.url?.()||''};}}
 export async function startInteractiveDldLogin(){const u=process.env.DLD_USERNAME,p=process.env.DLD_PASSWORD;if(!u||!p)return{status:'missing_credentials'};await ensureSession();await selectBestPage();if(page&&page.url()!=='about:blank'){const existing=await detectState();if(existing.status==='uae_pass_approval_required')return waitForUaePassApproval(existing);if(['session_active','real_estate_admin_profile_selected','uae_pass','captcha_required','login_form'].includes(existing.status))return existing;}await page.goto(DLD_URL,{waitUntil:'domcontentloaded',timeout:45000});await page.waitForTimeout(3000);const body=await pageText(page);if(body.includes('dld application dashboard')){if(body.includes('trakheesi'))return clickTrakheesi();await saveSession();return{status:'session_active',url:page.url()};}const user=await firstVisible(page,['input[name="username"]','input[name="Username"]','input[type="text"][placeholder*="user" i]','input[type="email"]','input[type="text"]']);const pass=await firstVisible(page,['input[type="password"]']);if(!user||!pass)return{status:'login_form_not_found',url:page.url()};await user.fill(u);await pass.fill(p);return detectState();}
