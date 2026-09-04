@@ -41,7 +41,59 @@ async function waitForUaePassApproval(initial){if(initial?.status!=='uae_pass_ap
 async function submitUaePassId(){await switchToUaePass();const eid=process.env.UAE_PASS_EMIRATES_ID;if(!eid)return{status:'uae_pass_id_required',url:page.url()};const input=await firstVisible(page,['input[placeholder*="Emirates ID, email, or phone" i]','input[placeholder*="Emirates ID" i]','input[aria-label*="Emirates ID" i]','input[type="text"]','input[type="tel"]']);if(!input)return{status:'uae_pass_id_field_not_found',url:page.url()};await input.fill(eid);const btn=await firstVisible(page,['button:has-text("Login")','button:has-text("Sign in")','button[type="submit"]','input[type="submit"]']);if(!btn)return{status:'uae_pass_login_button_not_found',url:page.url()};await btn.click({noWaitAfter:true});await page.waitForTimeout(3500);const s=await detectState();return waitForUaePassApproval(s);}
 async function clickTrakheesi(){const t=page.getByText('Trakheesi',{exact:true}).first();if(!(await t.isVisible({timeout:5000}).catch(()=>false)))return{status:'trakheesi_not_found',url:page.url()};const card=t.locator('xpath=ancestor::*[.//*[contains(normalize-space(.),"Go to Account")] or .//*[contains(normalize-space(.),"Login with UAE Pass")]][1]');let btn=card.getByText(/Go to Account/i,{exact:true}).first();if(await btn.isVisible({timeout:1500}).catch(()=>false)){const popup=context.waitForEvent('page',{timeout:4000}).catch(()=>null);await btn.click({force:true,noWaitAfter:true});const p=await popup;if(p){page=p;page.setDefaultTimeout(10000);}await page.waitForTimeout(3500);await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae')){await saveSession();return{status:'session_active',url:page.url()};}return detectState();}btn=card.getByRole('button',{name:/login with uae pass/i}).first();if(!(await btn.isVisible().catch(()=>false)))btn=card.getByText(/login with uae pass/i).first();if(!(await btn.isVisible().catch(()=>false)))return{status:'trakheesi_account_button_not_found',url:page.url()};await btn.click({noWaitAfter:true});await page.waitForTimeout(1000);const m=await handleUaePassModal();return m||detectState();}
 async function ensureTrakheesiAccount(){await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};const text=await pageText(page);if(text.includes('dld application dashboard')&&text.includes('trakheesi')){const entered=await clickTrakheesi();await page.waitForTimeout(1500);await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};return entered;}return{status:'trakheesi_session_required',url:page.url()};}
-async function openSecondaryPermitEdit(){await ensureSession();const entered=await ensureTrakheesiAccount();if(!page.url().includes('trakheesi.dubailand.gov.ae'))return entered?.status==='session_active'?{status:'trakheesi_session_required',url:page.url()}:entered;const permitNav=page.getByText('Permit',{exact:true}).first();if(await permitNav.isVisible({timeout:5000}).catch(()=>false))await permitNav.click({force:true});await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:12000}).catch(()=>{});const result=await page.evaluate(permit=>{const norm=s=>(s||'').replace(/\s+/g,' ').trim();const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');const editLinks=[...document.querySelectorAll('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]')];const candidates=[];for(const link of editLinks){let node=link;for(let depth=0;depth<12&&node;depth++,node=node.parentElement){const text=norm(node.innerText||node.textContent);if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){candidates.push({link,node,depth,textLength:text.length});break;}}}candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);const chosen=candidates[0];if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};const text=norm(chosen.node.innerText||chosen.node.textContent);if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};chosen.link.click();return{clicked:true};},SECONDARY_PERMIT).catch(error=>({clicked:false,reason:error.message}));if(!result?.clicked)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:result?.reason||'unknown'};await page.waitForTimeout(2500);const txRaw=await page.locator('body').innerText().catch(()=>'' );const txMatch=txRaw.match(/Transaction\s*#\s*([0-9]+)/i);const actualTx=txMatch?.[1]||null;if(actualTx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:actualTx,url:page.url()};return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};}
+async function openSecondaryPermitEdit(){
+  await ensureSession();
+  const entered=await ensureTrakheesiAccount();
+  if(!page.url().includes('trakheesi.dubailand.gov.ae'))return entered?.status==='session_active'?{status:'trakheesi_session_required',url:page.url()}:entered;
+
+  // If a prior click already opened the correct edit page, do not navigate away.
+  let raw=await page.locator('body').innerText({timeout:4000}).catch(()=>'' );
+  let tx=raw.match(/Transaction\s*#\s*([0-9]+)/i)?.[1]||null;
+  if(tx===SECONDARY_PERMIT)return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};
+
+  const permitNav=page.getByText('Permit',{exact:true}).first();
+  if(await permitNav.isVisible({timeout:5000}).catch(()=>false))await permitNav.click({force:true});
+  await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:12000}).catch(()=>{});
+
+  const result=await page.evaluate(permit=>{
+    const norm=s=>(s||'').replace(/\s+/g,' ').trim();
+    const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');
+    const editLinks=[...document.querySelectorAll('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]')];
+    const candidates=[];
+    for(const link of editLinks){
+      let node=link;
+      for(let depth=0;depth<12&&node;depth++,node=node.parentElement){
+        const text=norm(node.innerText||node.textContent);
+        if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){candidates.push({link,node,depth,textLength:text.length});break;}
+      }
+    }
+    candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);
+    const chosen=candidates[0];
+    if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};
+    const text=norm(chosen.node.innerText||chosen.node.textContent);
+    if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};
+    chosen.link.click();
+    return{clicked:true};
+  },SECONDARY_PERMIT).catch(error=>({clicked:false,reason:error.message}));
+
+  if(!result?.clicked){
+    // Trakheesi sometimes renders the menu action separately from the permit row.
+    // Only use the fallback when exactly one visible Edit action exists, then
+    // verify Transaction #150273 after the click before continuing.
+    await page.waitForTimeout(500);
+    const edits=page.getByText(/^Edit$/i,{exact:true});
+    const visible=[];
+    for(let i=0;i<await edits.count().catch(()=>0);i++)if(await edits.nth(i).isVisible().catch(()=>false))visible.push(edits.nth(i));
+    if(visible.length!==1)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:result?.reason||'visible_edit_not_unique'};
+    await visible[0].click({force:true});
+  }
+
+  await page.waitForTimeout(2500);
+  raw=await page.locator('body').innerText().catch(()=>'' );
+  tx=raw.match(/Transaction\s*#\s*([0-9]+)/i)?.[1]||null;
+  if(tx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:tx,url:page.url()};
+  return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url()};
+}
 export async function prepareSecondaryListing(payload={}){try{const {purpose,propertyType,deed={}}=payload;if(!['RENT','SALE'].includes(purpose))return{status:'invalid_listing_purpose'};if(!['LAND','BUILDING','VILLA','UNIT'].includes(propertyType))return{status:'invalid_property_type'};if(propertyType!=='UNIT')return{status:'property_type_not_mapped',propertyType};for(const key of['area','landNo','buildingName','unitNo'])if(!deed[key])return{status:'missing_deed_field',field:key};const opened=await openSecondaryPermitEdit();if(opened.status!=='secondary_permit_edit_open')return opened;
 const add=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_AddPropertyButton').first();if(!(await add.isVisible({timeout:5000}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};await add.evaluate(el=>el.click());await page.waitForTimeout(900);
 const propertyRadio=page.locator('#MainContent_UCPermitHeader_UCPropertyList1_UCPopUpPropertyAction_BodyTemplateContainer_UCPropertyActionObj_listingTypeRbl_2').first();if(!(await propertyRadio.count().catch(()=>0)))return{status:'listing_type_property_not_found',url:page.url()};await propertyRadio.evaluate(el=>el.click());await page.waitForLoadState('domcontentloaded',{timeout:8000}).catch(()=>{});await page.waitForTimeout(1400);
