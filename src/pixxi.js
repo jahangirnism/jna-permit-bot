@@ -25,7 +25,7 @@ function normalizePhone(value=''){
 function looksLikeStaffRow(row){
   return row&&typeof row==='object'&&!Array.isArray(row)&&(
     row.id||row.userId||row.staffId||row.nickName||row.realName||row.name||
-    row.phone||row.mobile||row.tel||row.email||row.brn||row.BRN
+    row.phone||row.mobile||row.tel||row.email||row.brn||row.BRN||row.agentBRN
   );
 }
 
@@ -85,6 +85,12 @@ async function pixxiRequest(pathname,{method='GET',body}={}){
   throw new Error('Pixxi request failed after re-authentication');
 }
 
+async function getPixxiStaffDetail(staffId){
+  if(!staffId)return null;
+  const data=await pixxiRequest(`/system/user/${encodeURIComponent(String(staffId))}`);
+  return data?.data||data||null;
+}
+
 export async function findPixxiAgentByMobile(mobile){
   const wanted=normalizePhone(mobile);
   if(!wanted)throw new Error('Agent mobile is required');
@@ -93,12 +99,21 @@ export async function findPixxiAgentByMobile(mobile){
     const data=await pixxiRequest(`/system/user/list?pageNum=${pageNum}&deptId=1406&pageSize=100`);
     const rows=staffRows(data);
     const exact=rows.find(row=>normalizePhone(row?.phone||row?.mobile||row?.tel)===wanted);
-    if(exact)return exact;
-    const suffix=rows.find(row=>{
+    const suffix=exact||rows.find(row=>{
       const phone=normalizePhone(row?.phone||row?.mobile||row?.tel);
       return phone&&phone.endsWith(wanted.slice(-9));
     });
-    if(suffix)return suffix;
+    if(suffix){
+      const staffId=suffix?.id||suffix?.userId||suffix?.staffId;
+      if(!staffId)return suffix;
+      try{
+        const detail=await getPixxiStaffDetail(staffId);
+        return detail&&typeof detail==='object'?{...suffix,...detail}:suffix;
+      }catch(error){
+        console.warn(`Pixxi staff detail lookup failed for ${staffId}:`,error.message);
+        return suffix;
+      }
+    }
     if(rows.length>0&&rows.length<100)break;
     if(rows.length===0)break;
   }
@@ -126,7 +141,7 @@ export function pixxiAgentSummary(row={}){
     name:row?.nickName||row?.realName||row?.name||row?.userName||row?.username||'',
     phone:row?.phone||row?.mobile||row?.tel||'',
     email:row?.email||row?.mail||'',
-    brn:row?.brn||row?.BRN||row?.brokerRegistrationNumber||row?.brokerNo||'',
+    brn:row?.agentBRN||row?.brn||row?.BRN||row?.brokerRegistrationNumber||row?.brokerNo||'',
     role:row?.roleName||row?.role||row?.position||''
   };
 }
