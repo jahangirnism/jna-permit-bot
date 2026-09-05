@@ -63,11 +63,7 @@ async function normalizeDldFile(file,kind){
 
 function inMemoryUpload(file){
   const ext=fileExt(file.name);
-  return{
-    name:path.basename(file.name),
-    mimeType:mimeFromExt(ext),
-    buffer:Buffer.from(file.base64,'base64')
-  };
+  return{name:path.basename(file.name),mimeType:mimeFromExt(ext),buffer:Buffer.from(file.base64,'base64')};
 }
 
 const RECOVERABLE_LISTING_STATES=new Set([
@@ -83,9 +79,7 @@ async function prepareListingWithRetry(payload){
     result=await prepareSecondaryListing(payload);
     if(result?.status==='property_selected')return result;
     const inspected=await inspectSecondaryListingState().catch(()=>null);
-    if(inspected?.status==='listing_value_ready'){
-      return{status:'property_selected',permit:'150273',unitNo:payload?.deed?.unitNo,buildingName:payload?.deed?.buildingName,area:payload?.deed?.area,selectedResult:inspected.selectedResult||'',recovered:true};
-    }
+    if(inspected?.status==='listing_value_ready')return{status:'property_selected',permit:'150273',unitNo:payload?.deed?.unitNo,buildingName:payload?.deed?.buildingName,area:payload?.deed?.area,selectedResult:inspected.selectedResult||'',recovered:true};
     if(!RECOVERABLE_LISTING_STATES.has(result?.status))return result;
     console.log(`Recoverable Trakheesi state ${result.status}; inspecting and retrying (${attempt}/6)`);
     if(attempt<6)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1400));
@@ -99,39 +93,25 @@ async function resumeWorkflowState(taskPayload={}){
   const supplied=taskPayload?.workflow;
   if(validPermitContext(supplied))await savePermitContext(supplied).catch(()=>{});
   const contextPayload=validPermitContext(supplied)?supplied:await loadPermitContext();
-
   let listing=await inspectSecondaryListingState();
   if(listing?.status==='listing_value_ready')return listing;
-
   let last=listing;
   for(let attempt=1;attempt<=5;attempt++){
-    let general=await testDldLogin();
-    last=general||last;
-
+    let general=await testDldLogin();last=general||last;
     if(MANUAL_STATES.has(general?.status))return general;
-
     if(['session_active','real_estate_admin_profile_selected'].includes(general?.status)){
-      if(contextPayload){
-        const resumed=await prepareListingWithRetry(contextPayload);
-        if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};
-      }
+      if(contextPayload){const resumed=await prepareListingWithRetry(contextPayload);if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};}
       return{...general,needsPermitContext:true};
     }
-
     if(SELF_HEAL_STATES.has(general?.status)){
       await new Promise(r=>setTimeout(r,1200));
-      const continued=await continueAfterCaptcha();
-      last=continued||last;
+      const continued=await continueAfterCaptcha();last=continued||last;
       if(MANUAL_STATES.has(continued?.status))return continued;
       if(['session_active','real_estate_admin_profile_selected'].includes(continued?.status)){
-        if(contextPayload){
-          const resumed=await prepareListingWithRetry(contextPayload);
-          if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};
-        }
+        if(contextPayload){const resumed=await prepareListingWithRetry(contextPayload);if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};}
         return{...continued,needsPermitContext:true};
       }
     }
-
     listing=await inspectSecondaryListingState();
     if(listing?.status==='listing_value_ready')return listing;
     if(attempt<5)await new Promise(r=>setTimeout(r,1500));
@@ -152,27 +132,16 @@ async function execute(task){
       let marketing,advertisement;
       try{marketing=await normalizeDldFile(task.payload?.marketingContract,'marketing');}catch(error){return{status:'file_normalization_failed',which:'marketing_contract',message:error.message};}
       try{advertisement=await normalizeDldFile(task.payload?.advertisementFormat,'advertisement');}catch(error){return{status:'file_normalization_failed',which:'advertisement_format',message:error.message};}
+      const finalPayload={...task.payload,marketingContract:{path:inMemoryUpload(marketing)},advertisementFormat:{path:inMemoryUpload(advertisement)}};
 
-      // Keep Telegram documents in memory. Playwright accepts file payload objects directly,
-      // so nothing is written to the Mac/PC filesystem for the DLD upload attempt.
-      const finalPayload={
-        ...task.payload,
-        marketingContract:{path:inMemoryUpload(marketing)},
-        advertisementFormat:{path:inMemoryUpload(advertisement)}
-      };
-
-      let result;
-      for(let attempt=1;attempt<=3;attempt++){
-        result=await finalizeSecondaryListing(finalPayload);
-        if(result?.status!=='listing_saved')return result;
-        await new Promise(r=>setTimeout(r,900));
-        const inspected=await inspectSecondaryListingState().catch(()=>null);
-        if(inspected?.status!=='listing_value_ready')return result;
-        console.log(`DLD Save was not confirmed; listing modal is still open (${attempt}/3). Retrying Save.`);
-        if(attempt<3)await new Promise(r=>setTimeout(r,1200));
-      }
+      // Upload each document only once. Re-running finalizeSecondaryListing resets Telerik's
+      // async upload controls and can make an already-green attachment disappear.
+      const result=await finalizeSecondaryListing(finalPayload);
+      if(result?.status!=='listing_saved')return result;
+      await new Promise(r=>setTimeout(r,1200));
       const inspected=await inspectSecondaryListingState().catch(()=>null);
-      return{status:'listing_save_not_confirmed',permit:'150273',url:inspected?.url||result?.url||'',reason:'save_button_clicked_but_listing_modal_remained_open'};
+      if(inspected?.status!=='listing_value_ready')return result;
+      return{status:'listing_save_not_confirmed',permit:'150273',url:inspected?.url||result?.url||'',reason:'save_button_clicked_but_listing_modal_remained_open_no_document_reupload'};
     }
     default:return{status:'agent_error',message:`Unknown task: ${task.type}`};
   }
