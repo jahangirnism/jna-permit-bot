@@ -30,7 +30,30 @@ function normalizeFurnishing(value){
   if(['HAS','FULLY_FURNISHED','FURNISHED','FULL'].includes(v))return 'HAS';
   if(['SEMI','SEMI_FURNISHED','PARTLY_FURNISHED','PART_FURNISHED'].includes(v))return 'SEMI';
   if(['NONE','UNFURNISHED','NOT_FURNISHED'].includes(v))return 'NONE';
-  return clean(value);
+  throw new Error('Furnishing must be Furnished, Semi Furnished, or Unfurnished');
+}
+
+function normalizeView(value){
+  const raw=clean(value);
+  if(!raw)return'';
+  const v=raw.toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  if(v.endsWith('_VIEW'))return v;
+  const aliases={
+    COMMUNITY:'COMMUNITY_VIEW',COMMUNITY_VIEW:'COMMUNITY_VIEW',
+    POOL:'POOL_VIEW',POOL_VIEW:'POOL_VIEW',
+    BURJ_KHALIFA:'BURJ_KHALIFA_VIEW',BURJ_KHALIFA_VIEW:'BURJ_KHALIFA_VIEW',
+    SEA:'SEA_VIEW',SEA_VIEW:'SEA_VIEW',
+    MARINA:'MARINA_VIEW',MARINA_VIEW:'MARINA_VIEW',
+    CITY:'CITY_VIEW',CITY_VIEW:'CITY_VIEW',
+    GARDEN:'GARDEN_VIEW',GARDEN_VIEW:'GARDEN_VIEW',
+    PARK:'PARK_VIEW',PARK_VIEW:'PARK_VIEW',
+    CANAL:'CANAL_VIEW',CANAL_VIEW:'CANAL_VIEW',
+    LAKE:'LAKE_VIEW',LAKE_VIEW:'LAKE_VIEW',
+    ROAD:'ROAD_VIEW',ROAD_VIEW:'ROAD_VIEW',
+    STREET:'STREET_VIEW',STREET_VIEW:'STREET_VIEW',
+    GOLF:'GOLF_COURSE_VIEW',GOLF_VIEW:'GOLF_COURSE_VIEW',GOLF_COURSE:'GOLF_COURSE_VIEW',GOLF_COURSE_VIEW:'GOLF_COURSE_VIEW'
+  };
+  return aliases[v]||`${v}_VIEW`;
 }
 
 export function bedroomNumber(value){
@@ -52,6 +75,7 @@ export function pixxiListingPayload(state={}){
   const propertyType=/sale|sell/i.test(clean(state.listingType))?'SELL':'RENT';
   const houseType=normalizeHouseType(state.crmHouseType);
   const completionStatus=propertyType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
+  const view=normalizeView(state.view);
   // Claude is intentionally unrestricted. Only the values sent to Pixxi are
   // capped to the lengths used by the previously working CRM flow.
   const payload={
@@ -63,12 +87,11 @@ export function pixxiListingPayload(state={}){
     size:number(state.size),
     price:Math.round(number(state.price)),
     isFurniture:normalizeFurnishing(state.furnishing),
-    views:clean(state.view)?[clean(state.view)]:[],
+    views:view?[view]:[],
     status:'ACTIVE',cityId:41,cityName:'Dubai'
   };
-  // Keep the create payload identical to the previously working Pixxi schema.
-  // Bathroom count is still collected and used by AI/MKTG, but is not sent here
-  // until Pixxi's accepted bathroom field name is confirmed.
+  // Bathroom count is collected and used by AI/MKTG, but is not sent until
+  // Pixxi's accepted bathroom field name is confirmed.
   if(propertyType==='SELL')payload.sellParameter={completionStatus};
   else payload.rentParameter={completionStatus:'COMPLETED'};
   return payload;
@@ -76,10 +99,18 @@ export function pixxiListingPayload(state={}){
 
 export async function createListingFromDraft(state={}){
   const payload=pixxiListingPayload(state);
-  const result=await createPixxiListing(payload);
-  const pixxiListingRef=result.listingRef;
-  const listingRef=formatJnAListingReference(pixxiListingRef,state.listingType);
-  return{...result,pixxiListingRef,listingRef,payload};
+  try{
+    const result=await createPixxiListing(payload);
+    const pixxiListingRef=result.listingRef;
+    const listingRef=formatJnAListingReference(pixxiListingRef,state.listingType);
+    return{...result,pixxiListingRef,listingRef,payload};
+  }catch(error){
+    if(/Unknown error/i.test(error.message)){
+      const summary={propertyType:payload.propertyType,houseType:payload.houseType,isFurniture:payload.isFurniture,views:payload.views,size:payload.size,price:payload.price,bedRoomNum:payload.bedRoomNum,titleLength:payload.name.length,descriptionLength:payload.description.length};
+      throw new Error(`${error.message}. Pixxi payload summary: ${JSON.stringify(summary)}`);
+    }
+    throw error;
+  }
 }
 
 function dubaiTodayParts(){
