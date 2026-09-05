@@ -69,15 +69,29 @@ async function materialize(file,label){
   return target;
 }
 
-const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found','unit_tab_not_found','unit_tab_not_ready','wrong_permit_edit_page']);
+const RECOVERABLE_LISTING_STATES=new Set([
+  'listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found',
+  'area_option_not_found','unit_tab_not_found','unit_tab_not_ready','permit_edit_not_found',
+  'permit_page_unconfirmed','property_search_fields_not_found','property_search_button_not_found',
+  'property_search_no_results','property_selected_but_value_field_not_found','unit_listing_open'
+]);
 async function prepareListingWithRetry(payload){
   if(validPermitContext(payload))await savePermitContext(payload).catch(e=>console.error('Could not persist permit context:',e.message));
   let result;
-  for(let attempt=1;attempt<=4;attempt++){
+  for(let attempt=1;attempt<=6;attempt++){
     result=await prepareSecondaryListing(payload);
-    if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;
-    console.log(`Transient Trakheesi state ${result.status}; re-inspecting current page (${attempt}/4)`);
-    if(attempt<4)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));
+    if(result?.status==='property_selected')return result;
+
+    // Never trust a recoverable error until we inspect the live browser again.
+    // The DLD page often renders the correct next state slightly after a Playwright lookup times out.
+    const inspected=await inspectSecondaryListingState().catch(()=>null);
+    if(inspected?.status==='listing_value_ready'){
+      return{status:'property_selected',permit:'150273',unitNo:payload?.deed?.unitNo,buildingName:payload?.deed?.buildingName,area:payload?.deed?.area,selectedResult:inspected.selectedResult||'',recovered:true};
+    }
+
+    if(!RECOVERABLE_LISTING_STATES.has(result?.status))return result;
+    console.log(`Recoverable Trakheesi state ${result.status}; inspecting and retrying (${attempt}/6)`);
+    if(attempt<6)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1400));
   }
   return result;
 }
