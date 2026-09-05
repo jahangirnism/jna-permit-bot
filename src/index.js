@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { extractTitleDeedFromFile } from './titleDeed.js';
 import { startAgentRelay, runBrowserTask } from './agentRelay.js';
-import { getPixxiCurrentUser } from './pixxi.js';
+import { findPixxiAgentByMobile, getPixxiCurrentUser, pixxiAgentSummary } from './pixxi.js';
 
 const token=process.env.TELEGRAM_BOT_TOKEN;
 if(!token){console.error('Missing TELEGRAM_BOT_TOKEN environment variable');process.exit(1);}
@@ -221,6 +221,21 @@ async function handleUpdate(update){
     }catch(error){
       console.error('Pixxi login test failed:',error.message);
       await sendMessage(chatId,`Pixxi admin login failed: ${error.message}\n\nCheck PIXXI_ADMIN_EMAIL and PIXXI_ADMIN_PASSWORD in Railway Variables.`);
+    }
+    return;
+  }
+  if(command==='/testagent'){
+    const mobile=raw.split(/\s+/).slice(1).join(' ').trim();
+    if(!mobile){await sendMessage(chatId,'Send the agent mobile after the command.\n\nExample:\n/testagent +971544559898');return;}
+    await sendMessage(chatId,`Searching Pixxi Staff by mobile: ${mobile}…`);
+    try{
+      const row=await findPixxiAgentByMobile(mobile);
+      if(!row){await sendMessage(chatId,'No Pixxi staff member matched that mobile number. No CRM data was changed.');return;}
+      const agent=pixxiAgentSummary(row);
+      await sendMessage(chatId,`Pixxi staff match found.\n\nName: ${agent.name||'NOT RETURNED'}\nPhone: ${agent.phone||'NOT RETURNED'}\nEmail: ${agent.email||'NOT RETURNED'}\nBRN: ${agent.brn||'NOT RETURNED'}\nStaff ID: ${agent.id||'NOT RETURNED'}${agent.role?`\nRole: ${agent.role}`:''}\n\nThis was a read-only test. No listing was created or changed.`);
+    }catch(error){
+      console.error('Pixxi staff lookup test failed:',error.message);
+      await sendMessage(chatId,`Pixxi staff lookup failed: ${error.message}`);
     }
     return;
   }
