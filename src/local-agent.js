@@ -69,8 +69,8 @@ async function materialize(file,label){
   return target;
 }
 
-const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found']);
-async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=3;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/3)`);if(attempt<3)await new Promise(r=>setTimeout(r,1800));}return result;}
+const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found']);
+async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=3;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/3)`);if(attempt<3)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));}return result;}
 
 async function execute(task){
   switch(task.type){
