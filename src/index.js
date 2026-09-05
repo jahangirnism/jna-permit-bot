@@ -10,7 +10,6 @@ const apiBase=`https://api.telegram.org/bot${token}`;
 let offset=0;
 let loginTestRunning=false;
 const permitState=new Map();
-const MAX_DLD_FILE=1024*1024;
 
 async function telegram(method,body={}){
   const response=await fetch(`${apiBase}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -45,12 +44,18 @@ function resultMessage(result){
     case 'secondary_permit_not_found':return 'Secondary permit 150273 was not found. I stopped without changing anything.';
     case 'permit_menu_not_found':return 'Permit 150273 was found, but its action menu was not detected. I stopped without changing anything.';
     case 'permit_edit_not_found':return 'Permit 150273 menu opened, but Edit was not detected. I stopped.';
-    case 'wrong_permit_edit_page':return 'The page after Edit did not confirm transaction 150273. I stopped to avoid editing the wrong permit.';
+    case 'wrong_permit_edit_page':return 'The page did not confirm transaction 150273. I stopped to avoid editing the wrong permit.';
     case 'add_property_button_not_found':return 'Permit 150273 opened, but Add Property/Project was not detected.';
     case 'area_option_not_found':return `Area “${result.area}” was not found in the DLD dropdown. Please check the Title Deed/DLD area name.`;
-    case 'property_exact_match_not_found':return 'DLD search did not return an exact match for Unit + Building + Area. I did not select any property.';
     case 'property_type_not_mapped':return `${result.propertyType} is selected, but automatic field mapping is not configured for that property type yet.`;
-    case 'property_selected':return `Property matched exactly and selected:\n${result.unitNo} — ${result.buildingName}, ${result.area}`;
+    case 'property_selected':return `Property selected:\n${result.unitNo} — ${result.selectedResult||`${result.buildingName}, ${result.area}`}`;
+    case 'listing_value_ready':return `Current Trakheesi listing is ready for Value${result.selectedResult?`:\n${result.selectedResult}`:'.'}`;
+    case 'listing_resume_not_ready':return `I could not safely resume from the current Trakheesi page (${result.reason||'required listing screen not found'}). I did not click anything.`;
+    case 'listing_resume_error':return `Could not inspect the current Trakheesi listing: ${result.message||'unknown error'}`;
+    case 'file_normalization_failed':return `Could not prepare the ${result.which==='marketing_contract'?'Marketing Contract':'Advertisement Format'} for DLD: ${result.message}`;
+    case 'document_upload_fields_not_found':return 'The required DLD document upload fields were not detected. I stopped before Save.';
+    case 'value_field_not_found':return 'The visible Value field was not detected. I stopped before changing anything.';
+    case 'listing_save_button_not_found':return 'The exact Unit Save button was not detected. I stopped without saving.';
     case 'listing_saved':return 'Property listing was saved successfully under secondary permit 150273.';
     case 'prepare_listing_error':return `Could not prepare the listing: ${result.message}`;
     case 'finalize_listing_error':return `Could not save the listing: ${result.message}`;
@@ -74,8 +79,8 @@ async function downloadTelegramFile(fileId,originalName='title-deed.pdf'){
   const info=await telegram('getFile',{file_id:fileId});
   const response=await fetch(`https://api.telegram.org/file/bot${token}/${info.file_path}`);
   if(!response.ok)throw new Error(`Telegram file download failed (${response.status})`);
-  const ext=path.extname(originalName)||path.extname(info.file_path)||'.bin';
-  const filePath=path.join(os.tmpdir(),`jna-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  const extension=path.extname(originalName)||path.extname(info.file_path)||'.bin';
+  const filePath=path.join(os.tmpdir(),`jna-${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`);
   await fs.writeFile(filePath,Buffer.from(await response.arrayBuffer()));
   return filePath;
 }
@@ -87,8 +92,6 @@ async function telegramFileData(message,defaultName){
   const buf=Buffer.from(await response.arrayBuffer());
   return{name:doc?.file_name||(defaultName||`upload-${Date.now()}.jpg`),size:buf.length,base64:buf.toString('base64')};
 }
-function ext(name){return path.extname(name||'').toLowerCase().replace('.','');}
-function validDldFile(file,kind){if(!file||file.size>MAX_DLD_FILE)return false;const e=ext(file.name);return kind==='marketing'?['jpeg','jpg','bmp','gif','png','pdf'].includes(e):['jpeg','jpg','bmp','png'].includes(e);}
 
 async function handleTitleDeed(chatId,message,state){
   const doc=message.document;const photo=message.photo?.at(-1);const fileId=doc?.file_id||photo?.file_id;
@@ -118,36 +121,65 @@ async function prepareListing(chatId,state){
   await sendMessage(chatId,resultMessage(result));
   if(result.status==='property_selected'){
     state.step='value';
-    await sendMessage(chatId,'Send the listing Value (numbers only, for example: 120000).');
+    await sendMessage(chatId,'Please enter the property VALUE in AED.\nExample: 50000');
   }
 }
 async function maybePrepareListing(chatId,state,result){if(state?.step==='ready_for_dld'&&['session_active','real_estate_admin_profile_selected'].includes(result.status))await prepareListing(chatId,state);}
 
 async function finalizeListing(chatId,state){
-  state.step='saving';await sendMessage(chatId,'Uploading the documents and saving the property in Trakheesi…');
-  const result=await runBrowserTask('finalize_listing',{value:state.value,marketingContract:state.marketingContract,advertisementFormat:state.advertisementFormat},70000);
+  state.step='saving';await sendMessage(chatId,'Preparing the files, uploading them to Trakheesi, and saving the property…');
+  const result=await runBrowserTask('finalize_listing',{value:state.value,marketingContract:state.marketingContract,advertisementFormat:state.advertisementFormat},90000);
   await sendMessage(chatId,resultMessage(result));
-  if(result.status==='listing_saved'){state.step='saved';await sendMessage(chatId,'Done. Announcement Text was left blank. I stopped after Save; no further submission step was automated.');}
-  else state.step='advertisement_format';
+  if(result.status==='listing_saved'){
+    state.step='saved';
+    await sendMessage(chatId,'Done. Announcement Text was left blank. Save was completed. We will map the next permit/QR stage separately.');
+  }else if(result.status==='file_normalization_failed'){
+    state.step=result.which==='marketing_contract'?'marketing_contract':'advertisement_format';
+    await sendMessage(chatId,result.which==='marketing_contract'?'Please upload the Marketing Contract again.':'Please upload the Advertisement Format again.');
+  }else state.step='advertisement_format';
 }
 
 async function handleUpdate(update){
   const message=update.message;if(!message)return;
-  const chatId=message.chat.id;const state=permitState.get(chatId);
+  const chatId=message.chat.id;
+  let state=permitState.get(chatId);
 
   if(state?.step==='title_deed'&&(message.document||message.photo)){
     try{await handleTitleDeed(chatId,message,state);}catch(e){console.error('Title deed extraction failed:',e);await sendMessage(chatId,`I could not read that Title Deed automatically: ${e.message}\nPlease upload a clear PDF or image.`);}return;
   }
   if(state?.step==='marketing_contract'&&(message.document||message.photo)){
-    try{const file=await telegramFileData(message,'marketing-contract.jpg');if(!validDldFile(file,'marketing')){await sendMessage(chatId,'Marketing contract must be 1 MB or less and one of: jpeg, jpg, bmp, gif, png, pdf. Please upload again.');return;}state.marketingContract=file;state.step='advertisement_format';await sendMessage(chatId,'Marketing contract received. Now upload the Copy of the Advertisement Format (1 MB max; jpeg/jpg/bmp/png only).');}catch(e){await sendMessage(chatId,`Could not read that upload: ${e.message}`);}return;
+    try{
+      state.marketingContract=await telegramFileData(message,'marketing-contract.jpg');
+      state.step='advertisement_format';
+      await sendMessage(chatId,'Marketing Contract received.\n\nNow upload the Copy of the Advertisement Format. DLD allows jpeg/jpg/bmp/png up to 1 MB. If the image is too large or another common image format is used, the office agent will resize/convert it automatically.');
+    }catch(e){await sendMessage(chatId,`Could not read that upload: ${e.message}`);}return;
   }
   if(state?.step==='advertisement_format'&&(message.document||message.photo)){
-    try{const file=await telegramFileData(message,'advertisement-format.jpg');if(!validDldFile(file,'advert')){await sendMessage(chatId,'Advertisement format must be 1 MB or less and one of: jpeg, jpg, bmp, png. Please upload again.');return;}state.advertisementFormat=file;await finalizeListing(chatId,state);}catch(e){await sendMessage(chatId,`Could not read that upload: ${e.message}`);}return;
+    try{state.advertisementFormat=await telegramFileData(message,'advertisement-format.jpg');await finalizeListing(chatId,state);}catch(e){await sendMessage(chatId,`Could not read that upload: ${e.message}`);}return;
   }
 
   if(!message.text)return;
-  const raw=message.text.trim();const command=raw.split(/\s+/)[0].split('@')[0];
+  const raw=message.text.trim();const command=raw.split(/\s+/)[0].split('@')[0].toLowerCase();
   console.log(`Received ${command} from chat ${chatId}`);
+
+  if(command==='/resumelisting'){
+    await sendMessage(chatId,'Checking the current Trakheesi page on the office computer…');
+    const result=await runBrowserTask('resume_listing',{},40000);
+    await sendMessage(chatId,resultMessage(result));
+    if(result.status==='listing_value_ready'){
+      state={step:'value',resumed:true};permitState.set(chatId,state);
+      await sendMessage(chatId,'Please enter the property VALUE in AED.\nExample: 50000');
+    }
+    return;
+  }
+  if(command==='/cancel'){permitState.delete(chatId);await sendMessage(chatId,'Current permit workflow cancelled. The DLD browser page was not changed.');return;}
+  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. If Trakheesi is already at the Value/documents screen, use /resumelisting.');return;}
+  if(command==='/newpermit'){state={step:'title_deed'};permitState.set(chatId,state);await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
+  if(command==='/testlogin'){await runLoginTest(chatId,state);return;}
+  if(command==='/preparelisting'){if(!state||state.step!=='ready_for_dld'){await sendMessage(chatId,'No permit is ready for DLD. Start with /newpermit first.');return;}await prepareListing(chatId,state);return;}
+  if(command==='/continue'){await sendMessage(chatId,'Continuing the DLD session on the office computer…');const result=await runBrowserTask('continue',{},50000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
+  if(command==='/uaepass'){await sendMessage(chatId,'Continuing UAE PASS in the office Chrome session…');const result=await runBrowserTask('uae_pass',{},50000);await sendMessage(chatId,resultMessage(result));return;}
+  if(command==='/checkuaepass'){const result=await runBrowserTask('check_uae_pass',{},40000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
 
   if(state?.step==='purpose'&&/^(rent|sale)$/i.test(raw)){
     state.purpose=raw.toUpperCase();state.step='property_type';
@@ -155,23 +187,16 @@ async function handleUpdate(update){
   }
   if(state?.step==='property_type'&&/^(land|building|villa|unit)$/i.test(raw)){
     state.propertyType=raw.toUpperCase();state.step='ready_for_dld';
-    if(state.propertyType==='UNIT'){
-      await sendMessage(chatId,`Unit details ready for DLD:\n\nArea: ${state.deed.area}\nLand No: ${state.deed.landNo}\nMunicipality No: leave blank\nBuilding Name: ${state.deed.buildingName}\nUnit No: ${state.deed.unitNo}\n\nSend /testlogin. Once the session is active I will open secondary permit 150273 automatically.`);
-    }else await sendMessage(chatId,`${state.propertyType} selected. Automatic DLD field mapping is currently defined only for UNIT; I will not guess the other fields.`);
+    if(state.propertyType==='UNIT')await sendMessage(chatId,`Unit details ready for DLD:\n\nArea: ${state.deed.area}\nLand No: ${state.deed.landNo}\nMunicipality No: leave blank\nBuilding Name: ${state.deed.buildingName}\nUnit No: ${state.deed.unitNo}\n\nSend /testlogin. Once the session is active I will open secondary permit 150273 automatically.`);
+    else await sendMessage(chatId,`${state.propertyType} selected. Automatic DLD field mapping is currently defined only for UNIT; I will not guess the other fields.`);
     return;
   }
   if(state?.step==='value'){
-    const cleaned=raw.replace(/,/g,'');if(!/^\d+(?:\.\d{1,2})?$/.test(cleaned)||Number(cleaned)<=0){await sendMessage(chatId,'Please send a valid positive number for Value, for example: 120000');return;}
-    state.value=cleaned;state.step='marketing_contract';await sendMessage(chatId,'Now upload the Marketing Contract from the Owner (1 MB max; jpeg/jpg/bmp/gif/png/pdf).');return;
+    const cleaned=raw.replace(/,/g,'');
+    if(!/^\d+(?:\.\d{1,2})?$/.test(cleaned)||Number(cleaned)<=0){await sendMessage(chatId,'Please send a valid positive VALUE, for example: 50000');return;}
+    state.value=cleaned;state.step='marketing_contract';
+    await sendMessage(chatId,'Now upload the Marketing Contract from the Owner.\n\nDLD limit: 1 MB. Accepted: jpeg/jpg/bmp/gif/png/pdf. Oversized/common image formats will be resized/converted automatically where possible.');return;
   }
-
-  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. DLD browser work runs on the office computer.');return;}
-  if(command==='/newpermit'){permitState.set(chatId,{step:'title_deed'});await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
-  if(command==='/testlogin'){await runLoginTest(chatId,state);return;}
-  if(command==='/preparelisting'){if(!state||state.step!=='ready_for_dld'){await sendMessage(chatId,'No permit is ready for DLD. Start with /newpermit first.');return;}await prepareListing(chatId,state);return;}
-  if(command==='/continue'){await sendMessage(chatId,'Continuing the DLD session on the office computer…');const result=await runBrowserTask('continue',{},50000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
-  if(command==='/uaepass'){await sendMessage(chatId,'Continuing UAE PASS in the office Chrome session…');const result=await runBrowserTask('uae_pass',{},50000);await sendMessage(chatId,resultMessage(result));return;}
-  if(command==='/checkuaepass'){const result=await runBrowserTask('check_uae_pass',{},40000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
 }
 
 async function startup(){const me=await telegram('getMe');console.log(`Connected to Telegram as @${me.username} (${me.id})`);await telegram('deleteWebhook',{drop_pending_updates:false});console.log('Telegram webhook cleared; starting long polling');}
