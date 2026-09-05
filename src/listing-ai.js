@@ -1,6 +1,5 @@
 const ANTHROPIC_URL='https://api.anthropic.com/v1/messages';
 const MODEL=process.env.LISTING_AI_MODEL||'claude-sonnet-4-6';
-const MIN_TITLE=45,MAX_TITLE=50,MIN_DESCRIPTION=1200,MAX_DESCRIPTION=1500;
 
 function anthropicKey(){
   const key=process.env.ANTHROPIC_API_KEY||'';
@@ -24,8 +23,6 @@ function extractJson(text){
   if(first>=0&&last>first){
     const candidate=raw.slice(first,last+1);
     try{return JSON.parse(candidate);}catch{}
-    // Claude sometimes emits literal line breaks inside the description JSON string.
-    // Recover the two expected fields without accepting any other structure.
     const titleMatch=candidate.match(/["“”']?title["“”']?\s*:\s*["“]([\s\S]*?)["”]\s*,\s*["“”']?description["“”']?\s*:/i);
     const descStart=candidate.match(/["“”']?description["“”']?\s*:\s*["“]/i);
     if(titleMatch&&descStart){
@@ -37,7 +34,6 @@ function extractJson(text){
       if(title&&description)return{title,description};
     }
   }
-  // Final conservative fallback for responses containing only TITLE/DESCRIPTION labels.
   const labelled=raw.match(/(?:^|\n)\s*TITLE\s*[:\-]\s*(.+?)\s*\n+\s*DESCRIPTION\s*[:\-]\s*([\s\S]+)$/i);
   if(labelled){
     const title=cleanText(labelled[1]),description=cleanText(labelled[2]);
@@ -59,34 +55,18 @@ export function buildListingPrompts(input={}){
   if(!building)throw new Error('Building is required for listing copy');
 
   const system=`You are an expert Dubai real estate listing copywriter for JnA House.
-RULES:
-- Title: strictly 45-50 characters including spaces, NO special symbols, scroll-stopping, forces the click
-- Title must NOT mention area, community, location, unit or exact floor number
-- Title CAN say "High Floor" or "Mid Floor" only
-- Description: strictly 1200-1500 characters including spaces
-- ZERO prose paragraphs after the one-line opener
-- Every line after opener = section header OR short bullet starting with a dash
-- Prefer short bullets, but include enough useful factual bullets to reach 1200-1500 characters
-- Agent Notes are priority facts. Preserve them when relevant and do not contradict them
-- NEVER invent or imply unverified facts, rankings or comparisons. Do not claim best-managed, most sought-after, low service charges, highest ROI, cheapest, best value, rare, minutes-to, exact travel times, amenities, views or availability unless supplied in the input
-- You do NOT have live PropertyFinder/Bayut browsing in this request. Treat competitor research as context only and never fabricate research findings
-- If a building/community fact is not confidently known from the supplied input, omit it rather than guess
-- Output must be ONE valid JSON object. Escape every line break inside description as \\n. Do not use markdown fences or commentary.
-
-Use this exact description structure:
-[One-line opener]
-UNIT FEATURES
-- [short factual bullets]
-BUILDING HIGHLIGHTS
-- [short factual bullets]
-LOCATION
-- [short factual bullets]
-
+Write the listing naturally and professionally. You decide the appropriate title and description length; there are no character-count limits.
+Agent Notes are priority facts. Preserve them when relevant and do not contradict them.
+Never invent or imply unverified facts, rankings or comparisons. Do not claim best-managed, most sought-after, low service charges, highest ROI, cheapest, best value, rare, minutes-to, exact travel times, amenities, views or availability unless supplied in the input.
+You do not have live PropertyFinder/Bayut browsing in this request. Do not fabricate research findings.
+If a building/community fact is not confidently known from the supplied input, omit it rather than guess.
+Use clear, useful real-estate listing copy. You may structure it with a short opener, headings and bullets when helpful.
+End with:
 JnA House — Premium Data-Driven Dubai Brokerage
 Contact: info@jnahouse.com or WhatsApp 971585719898
-Return ONLY valid JSON: {"title":"...","description":"..."}`;
+Output must be ONE valid JSON object with exactly two string fields: title and description. Escape line breaks inside description as \\n. Do not use markdown fences or commentary.`;
 
-  const user=`Building: ${building}\nArea: ${area}\nBedrooms: ${bedrooms}\nSize: ${size} sq ft\nType: ${listingType}\nPrice: AED ${price}\nFurnishing: ${furnishing}\nView: ${view}\nNotes: ${notes}\n\nCreate a factual listing using the supplied facts. Do not pretend that live competitor research was performed.\nReturn ONLY JSON: {"title":"...","description":"..."}`;
+  const user=`Building: ${building}\nArea: ${area}\nBedrooms: ${bedrooms}\nSize: ${size} sq ft\nType: ${listingType}\nPrice: AED ${price}\nFurnishing: ${furnishing}\nView: ${view}\nNotes: ${notes}\n\nCreate the best factual listing you can from these details. Choose the title and description length yourself. Return ONLY JSON: {"title":"...","description":"..."}`;
   return{system,user};
 }
 
@@ -120,25 +100,9 @@ async function callClaude(system,user){
   throw lastError||new Error('Claude did not return valid listing JSON');
 }
 
-function validationIssues(draft){
-  const issues=[];
-  const tc=charCount(draft.title),dc=charCount(draft.description);
-  if(tc<MIN_TITLE||tc>MAX_TITLE)issues.push(`title is ${tc} characters; required ${MIN_TITLE}-${MAX_TITLE}`);
-  if(dc<MIN_DESCRIPTION||dc>MAX_DESCRIPTION)issues.push(`description is ${dc} characters; required ${MIN_DESCRIPTION}-${MAX_DESCRIPTION}`);
-  return issues;
-}
-
 export async function generateListingCopy(input={}){
   const {system,user}=buildListingPrompts(input);
-  let draft=await callClaude(system,user);
-  let issues=validationIssues(draft);
-  const maxAttempts=3;
-  for(let attempt=2;issues.length&&attempt<=maxAttempts;attempt++){
-    const correction=`The previous draft failed mechanical validation:\n- ${issues.join('\n- ')}\n\nRewrite it now. Preserve only supported facts from the original property input. Do not add unsupported claims just to increase length. The title MUST be 45-50 characters and description MUST be 1200-1500 characters including spaces. Return ONLY valid JSON with title and description.\n\nPrevious draft:\n${JSON.stringify({title:draft.title,description:draft.description})}`;
-    draft=await callClaude(system,`${user}\n\n${correction}`);
-    issues=validationIssues(draft);
-  }
-  if(issues.length)throw new Error(`Claude could not produce a compliant listing after ${maxAttempts} attempts: ${issues.join('; ')}`);
+  const draft=await callClaude(system,user);
   return{
     title:draft.title,
     description:draft.description,
