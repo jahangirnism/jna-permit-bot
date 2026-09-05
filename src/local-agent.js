@@ -19,7 +19,7 @@ async function api(pathname,options={}){
 
 function fileExt(name=''){return path.extname(name).toLowerCase().replace('.','');}
 function allowed(kind,ext){return kind==='marketing'?['jpeg','jpg','bmp','gif','png','pdf'].includes(ext):['jpeg','jpg','bmp','png'].includes(ext);}
-function mimeFromExt(ext){if(ext==='png')return'image/png';if(ext==='gif')return'image/gif';if(ext==='bmp')return'image/bmp';if(ext==='webp')return'image/webp';return'image/jpeg';}
+function mimeFromExt(ext){if(ext==='png')return'image/png';if(ext==='gif')return'image/gif';if(ext==='bmp')return'image/bmp';if(ext==='webp')return'image/webp';if(ext==='pdf')return'application/pdf';return'image/jpeg';}
 function validPermitContext(p){return !!(p&&['RENT','SALE'].includes(p.purpose)&&p.propertyType==='UNIT'&&p.deed?.area&&p.deed?.landNo&&p.deed?.buildingName&&p.deed?.unitNo);}
 async function savePermitContext(payload){if(!validPermitContext(payload))return false;await fs.mkdir(LOCAL_ROOT,{recursive:true});await fs.writeFile(CURRENT_PERMIT_PATH,JSON.stringify({purpose:payload.purpose,propertyType:payload.propertyType,deed:payload.deed,updatedAt:new Date().toISOString()},null,2));return true;}
 async function loadPermitContext(){try{const p=JSON.parse(await fs.readFile(CURRENT_PERMIT_PATH,'utf8'));return validPermitContext(p)?p:null;}catch{return null;}}
@@ -61,12 +61,13 @@ async function normalizeDldFile(file,kind){
   return convertImageWithChrome({...file,size},kind);
 }
 
-async function materialize(file,label){
-  if(!file?.base64||!file?.name)throw new Error(`Missing ${label} file data`);
-  const safe=path.basename(file.name).replace(/[^a-zA-Z0-9._-]/g,'_');
-  const target=path.join(os.tmpdir(),`jna-${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`);
-  await fs.writeFile(target,Buffer.from(file.base64,'base64'));
-  return target;
+function inMemoryUpload(file){
+  const ext=fileExt(file.name);
+  return{
+    name:path.basename(file.name),
+    mimeType:mimeFromExt(ext),
+    buffer:Buffer.from(file.base64,'base64')
+  };
 }
 
 const RECOVERABLE_LISTING_STATES=new Set([
@@ -148,31 +149,30 @@ async function execute(task){
     case 'prepare_listing':return prepareListingWithRetry(task.payload||{});
     case 'resume_listing':return resumeWorkflowState(task.payload||{});
     case 'finalize_listing':{
-      let marketingPath,advertPath;
-      try{
-        let marketing,advertisement;
-        try{marketing=await normalizeDldFile(task.payload?.marketingContract,'marketing');}catch(error){return{status:'file_normalization_failed',which:'marketing_contract',message:error.message};}
-        try{advertisement=await normalizeDldFile(task.payload?.advertisementFormat,'advertisement');}catch(error){return{status:'file_normalization_failed',which:'advertisement_format',message:error.message};}
-        marketingPath=await materialize(marketing,'marketing contract');
-        advertPath=await materialize(advertisement,'advertisement format');
+      let marketing,advertisement;
+      try{marketing=await normalizeDldFile(task.payload?.marketingContract,'marketing');}catch(error){return{status:'file_normalization_failed',which:'marketing_contract',message:error.message};}
+      try{advertisement=await normalizeDldFile(task.payload?.advertisementFormat,'advertisement');}catch(error){return{status:'file_normalization_failed',which:'advertisement_format',message:error.message};}
 
-        const finalPayload={...task.payload,marketingContract:{path:marketingPath},advertisementFormat:{path:advertPath}};
-        let result;
-        for(let attempt=1;attempt<=3;attempt++){
-          result=await finalizeSecondaryListing(finalPayload);
-          if(result?.status!=='listing_saved')return result;
-          await new Promise(r=>setTimeout(r,900));
-          const inspected=await inspectSecondaryListingState().catch(()=>null);
-          if(inspected?.status!=='listing_value_ready')return result;
-          console.log(`DLD Save was not confirmed; listing modal is still open (${attempt}/3). Retrying Save.`);
-          if(attempt<3)await new Promise(r=>setTimeout(r,1200));
-        }
+      // Keep Telegram documents in memory. Playwright accepts file payload objects directly,
+      // so nothing is written to the Mac/PC filesystem for the DLD upload attempt.
+      const finalPayload={
+        ...task.payload,
+        marketingContract:{path:inMemoryUpload(marketing)},
+        advertisementFormat:{path:inMemoryUpload(advertisement)}
+      };
+
+      let result;
+      for(let attempt=1;attempt<=3;attempt++){
+        result=await finalizeSecondaryListing(finalPayload);
+        if(result?.status!=='listing_saved')return result;
+        await new Promise(r=>setTimeout(r,900));
         const inspected=await inspectSecondaryListingState().catch(()=>null);
-        return{status:'listing_save_not_confirmed',permit:'150273',url:inspected?.url||result?.url||'',reason:'save_button_clicked_but_listing_modal_remained_open'};
-      }finally{
-        if(marketingPath)await fs.rm(marketingPath,{force:true}).catch(()=>{});
-        if(advertPath)await fs.rm(advertPath,{force:true}).catch(()=>{});
+        if(inspected?.status!=='listing_value_ready')return result;
+        console.log(`DLD Save was not confirmed; listing modal is still open (${attempt}/3). Retrying Save.`);
+        if(attempt<3)await new Promise(r=>setTimeout(r,1200));
       }
+      const inspected=await inspectSecondaryListingState().catch(()=>null);
+      return{status:'listing_save_not_confirmed',permit:'150273',url:inspected?.url||result?.url||'',reason:'save_button_clicked_but_listing_modal_remained_open'};
     }
     default:return{status:'agent_error',message:`Unknown task: ${task.type}`};
   }
