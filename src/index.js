@@ -5,6 +5,7 @@ import { extractTitleDeedFromFile } from './titleDeed.js';
 import { startAgentRelay, runBrowserTask } from './agentRelay.js';
 import { findPixxiAgentByMobile, getPixxiCurrentUser, pixxiAgentSummary } from './pixxi.js';
 import { generateListingCopy } from './listing-ai.js';
+import { createListingFromDraft, generateNocPdf, normalizeHouseType, normalizeCompletion } from './listing-crm.js';
 import { initRuntimeState, loadListingAiStates, saveListingAiState, deleteListingAiState, waitForTelegramLease, closeRuntimeState } from './runtime-state.js';
 
 const token=process.env.TELEGRAM_BOT_TOKEN;
@@ -24,6 +25,16 @@ async function telegram(method,body={}){
   return data.result;
 }
 async function sendMessage(chatId,text){return telegram('sendMessage',{chat_id:chatId,text,disable_web_page_preview:true});}
+async function sendDocument(chatId,buffer,fileName,caption=''){
+  const form=new FormData();
+  form.append('chat_id',String(chatId));
+  if(caption)form.append('caption',caption);
+  form.append('document',new Blob([buffer],{type:'application/pdf'}),fileName);
+  const response=await fetch(`${apiBase}/sendDocument`,{method:'POST',body:form});
+  const data=await response.json();
+  if(!data.ok)throw new Error(`sendDocument failed (${data.error_code||response.status}): ${data.description||'Unknown Telegram error'}`);
+  return data.result;
+}
 function workflowPayload(state){return state?.deed&&state?.purpose&&state?.propertyType?{deed:state.deed,purpose:state.purpose,propertyType:state.propertyType,step:state.step}:null;}
 
 function resultMessage(result){
@@ -190,6 +201,15 @@ async function finalizeListing(chatId,state){
   }else state.step='advertisement_format';
 }
 
+async function createCrmAndBeginNoc(chatId,state){
+  await sendMessage(chatId,'Creating the approved AI listing in Pixxi CRM using the admin account…');
+  const created=await createListingFromDraft(state);
+  state.crmListingRef=created.listingRef;
+  state.crmCreated=true;
+  state.step='noc_agent_mobile';
+  await sendMessage(chatId,`Pixxi listing created successfully.\n\nCRM reference / ID returned: ${created.listingRef}\n\nNow send the listing agent mobile number.\nExample: +971544559898`);
+}
+
 async function handleListingAiInput(chatId,raw,state){
   const value=raw.trim();
   if(state.step==='building'){
@@ -225,12 +245,50 @@ async function handleListingAiInput(chatId,raw,state){
       const result=await generateListingCopy(state);
       state.step='generated';state.generated=result;
       await saveListingAiState(chatId,state);
-      await sendMessage(chatId,`AI LISTING DRAFT\n\nTITLE (${result.titleChars} chars)\n${result.title}\n\nDESCRIPTION (${result.descriptionChars} chars)\n${result.description}\n\nRead-only AI test complete. No Pixxi listing was created or changed.`);
+      await sendMessage(chatId,`AI LISTING DRAFT\n\nTITLE (${result.titleChars} chars)\n${result.title}\n\nDESCRIPTION (${result.descriptionChars} chars)\n${result.description}\n\nDraft ready. No Pixxi listing has been created yet.\n\nSend /createcrm when you want to create this exact draft in Pixxi and continue to NOC generation.`);
     }catch(error){
       state.step='notes';
       await saveListingAiState(chatId,state);
       await sendMessage(chatId,`Listing AI failed: ${error.message}`);
     }
+    return true;
+  }
+  if(state.step==='crm_property_type'){
+    try{state.crmHouseType=normalizeHouseType(value);}catch(error){await sendMessage(chatId,error.message);return true;}
+    state.step='crm_completion';await sendMessage(chatId,'Completion status? Send READY or OFF_PLAN');return true;
+  }
+  if(state.step==='crm_completion'){
+    try{state.completionStatus=normalizeCompletion(value);}catch(error){await sendMessage(chatId,error.message);return true;}
+    try{await createCrmAndBeginNoc(chatId,state);}catch(error){state.step='crm_completion';await sendMessage(chatId,`Pixxi listing creation failed: ${error.message}`);}
+    return true;
+  }
+  if(state.step==='noc_agent_mobile'){
+    await sendMessage(chatId,'Looking up the agent in Pixxi Staff…');
+    try{
+      const row=await findPixxiAgentByMobile(value);if(!row){await sendMessage(chatId,'No Pixxi staff member matched that mobile. Please send the agent mobile again.');return true;}
+      state.nocAgent=pixxiAgentSummary(row);state.step='noc_owner_name';
+      await sendMessage(chatId,`Agent found: ${state.nocAgent.name}\nBRN: ${state.nocAgent.brn||'NOT RETURNED'}\n\nOwner full name as per Passport / Emirates ID?`);
+    }catch(error){await sendMessage(chatId,`Agent lookup failed: ${error.message}`);}return true;
+  }
+  if(state.step==='noc_owner_name'){state.ownerName=value;state.step='noc_owner_id';await sendMessage(chatId,'Owner Passport / Emirates ID number?');return true;}
+  if(state.step==='noc_owner_id'){state.ownerId=value;state.step='noc_owner_mobile';await sendMessage(chatId,'Owner mobile number?');return true;}
+  if(state.step==='noc_owner_mobile'){state.ownerMobile=value;state.step='noc_owner_email';await sendMessage(chatId,'Owner email? Send - if none.');return true;}
+  if(state.step==='noc_owner_email'){state.ownerEmail=value==='-'?'':value;state.step='noc_title_deed';await sendMessage(chatId,'Title Deed / OQOOD number?');return true;}
+  if(state.step==='noc_title_deed'){state.titleDeedNo=value;state.step='noc_plot';await sendMessage(chatId,'Plot number?');return true;}
+  if(state.step==='noc_plot'){state.plotNo=value;state.step='noc_unit';await sendMessage(chatId,'Unit number? Send - if not applicable.');return true;}
+  if(state.step==='noc_unit'){state.unitNo=value==='-'?'':value;state.step='noc_parking';await sendMessage(chatId,'Number of parking spaces? Send 0 if none.');return true;}
+  if(state.step==='noc_parking'){state.parking=value;state.step='noc_commission';await sendMessage(chatId,'Commission amount / terms for the A2 contract?\nExample: 5% + VAT or AED 5000 + VAT');return true;}
+  if(state.step==='noc_commission'){state.commission=value;state.step='noc_contract_type';await sendMessage(chatId,'Contract type? Send EXCLUSIVE or NON-EXCLUSIVE');return true;}
+  if(state.step==='noc_contract_type'){
+    const v=value.toUpperCase().replace(/[ _]+/g,'-');
+    if(!['EXCLUSIVE','NON-EXCLUSIVE','NONEXCLUSIVE'].includes(v)){await sendMessage(chatId,'Please send EXCLUSIVE or NON-EXCLUSIVE.');return true;}
+    state.contractType=v==='EXCLUSIVE'?'EXCLUSIVE':'NON-EXCLUSIVE';state.step='noc_generating';await saveListingAiState(chatId,state);
+    await sendMessage(chatId,'Generating the JnA House A2 / NOC PDF…');
+    try{
+      const pdf=await generateNocPdf(state);state.step='noc_generated';
+      await sendDocument(chatId,pdf.buffer,pdf.fileName,`A2 / NOC generated for CRM ${state.crmListingRef}. Staff ID is not shown on the PDF.`);
+      await sendMessage(chatId,`NOC PDF generated successfully.\n\nCRM reference / ID: ${state.crmListingRef}\nAgent: ${state.nocAgent?.name||''}\nBRN: ${state.nocAgent?.brn||''}\n\nThe PDF uses the existing JnA House A2 generator. Contract start is today and end is exactly 4 calendar months later.`);
+    }catch(error){state.step='noc_contract_type';await sendMessage(chatId,`NOC PDF generation failed: ${error.message}`);}
     return true;
   }
   return false;
@@ -290,8 +348,15 @@ async function handleUpdate(update){
   }
   if(command==='/testlistingai'){
     const aiState={step:'building'};listingAiState.set(chatId,aiState);await saveListingAiState(chatId,aiState);
-    await sendMessage(chatId,'Claude Listing AI Test\n\nThis uses the title/description workflow ported from the existing listing repo and will NOT create anything in Pixxi.\n\nFirst, send the Building / Project name.');
+    await sendMessage(chatId,'Claude Listing AI Test\n\nThis uses the title/description workflow ported from the existing listing repo.\n\nFirst, send the Building / Project name.');
     return;
+  }
+  if(command==='/createcrm'){
+    const aiState=listingAiState.get(chatId);
+    if(!aiState?.generated){await sendMessage(chatId,'No approved AI draft is available. Run /testlistingai first and complete the draft.');return;}
+    if(aiState.crmCreated){await sendMessage(chatId,`This workflow already created a Pixxi listing. CRM reference / ID: ${aiState.crmListingRef}. I will not create a duplicate.`);return;}
+    aiState.step='crm_property_type';await saveListingAiState(chatId,aiState);
+    await sendMessage(chatId,'Creating this exact AI draft in Pixxi.\n\nFirst select property type:\nAPARTMENT, VILLA, TOWNHOUSE, OFFICE, or LAND');return;
   }
   if(command==='/resumelisting'){
     await sendMessage(chatId,'Checking the current DLD/Trakheesi browser state on the office computer…');
@@ -305,7 +370,7 @@ async function handleUpdate(update){
     cancelAutoResumeWatch(chatId);permitState.delete(chatId);listingAiState.delete(chatId);await deleteListingAiState(chatId);
     await sendMessage(chatId,'Current workflow cancelled. The DLD browser page and Pixxi CRM were not changed.');return;
   }
-  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. Manual OTP/CAPTCHA/UAE PASS steps are detected automatically after you complete them. /resumelisting can inspect the current browser state at any point.');return;}
+  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. Use /testlistingai to generate a listing draft, then /createcrm to create it in Pixxi and generate the A2/NOC. Manual OTP/CAPTCHA/UAE PASS steps are detected automatically after you complete them.');return;}
   if(command==='/newpermit'){cancelAutoResumeWatch(chatId);state={step:'title_deed'};permitState.set(chatId,state);await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
   if(command==='/testlogin'){await runLoginTest(chatId,state);return;}
   if(command==='/preparelisting'){if(!state||state.step!=='ready_for_dld'){await sendMessage(chatId,'No permit is ready for DLD. Start with /newpermit first.');return;}await prepareListing(chatId,state);return;}
