@@ -79,5 +79,16 @@ export async function createPixxiListing(payload){
 }
 
 export async function getPixxiCurrentUser(){
-  return pixxiRequest('/v1/user/getInfo');
+  // A successful /login response with a bearer token is sufficient to prove the
+  // admin credentials are valid. Pixxi's legacy /v1/user/getInfo route can return
+  // 404 for some admin accounts, so do not misreport that as an authentication failure.
+  await pixxiLogin();
+  try{
+    return await pixxiRequest('/v1/user/getInfo');
+  }catch(error){
+    if(/\/v1\/user\/getInfo failed \(404\)/.test(error.message)){
+      return{data:{name:'Admin account',email:process.env.PIXXI_ADMIN_EMAIL||'',authenticated:true,profileEndpointUnavailable:true}};
+    }
+    throw error;
+  }
 }
