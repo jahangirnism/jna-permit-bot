@@ -2,10 +2,10 @@
   "name": "jna-permit-bot",
   "version": "1.0.0",
   "description": "JnA House Telegram bot for CRM listing, NOC and Trakheesi permit automation",
-  "main": "src/index-v2.js",
+  "main": "src/index-v3.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index-v2.js",
+    "start": "node src/index-v3.js",
     "agent": "node --env-file=.env.local src/local-agent.js"
   },
   "engines": {
