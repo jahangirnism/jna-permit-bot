@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { extractTitleDeedFromFile } from './titleDeed.js';
 import { startAgentRelay, runBrowserTask } from './agentRelay.js';
+import { getPixxiCurrentUser } from './pixxi.js';
 
 const token=process.env.TELEGRAM_BOT_TOKEN;
 if(!token){console.error('Missing TELEGRAM_BOT_TOKEN environment variable');process.exit(1);}
@@ -209,6 +210,20 @@ async function handleUpdate(update){
   const raw=message.text.trim();const command=raw.split(/\s+/)[0].split('@')[0].toLowerCase();
   console.log(`Received ${command} from chat ${chatId}`);
 
+  if(command==='/testpixxi'){
+    await sendMessage(chatId,'Testing Pixxi admin login…');
+    try{
+      const data=await getPixxiCurrentUser();
+      const u=data?.data||data||{};
+      const name=u?.nickName||u?.name||u?.userName||u?.username||'Admin account';
+      const email=u?.email||u?.mail||'';
+      await sendMessage(chatId,`Pixxi admin login successful.\n\nAccount: ${name}${email?`\nEmail: ${email}`:''}`);
+    }catch(error){
+      console.error('Pixxi login test failed:',error.message);
+      await sendMessage(chatId,`Pixxi admin login failed: ${error.message}\n\nCheck PIXXI_ADMIN_EMAIL and PIXXI_ADMIN_PASSWORD in Railway Variables.`);
+    }
+    return;
+  }
   if(command==='/resumelisting'){
     await sendMessage(chatId,'Checking the current DLD/Trakheesi browser state on the office computer…');
     const result=await runBrowserTask('resume_listing',{workflow:workflowPayload(state)},90000);
