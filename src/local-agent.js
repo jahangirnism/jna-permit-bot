@@ -8,6 +8,7 @@ const base=(process.env.COORDINATOR_URL||'').replace(/\/$/,'');
 const secret=process.env.AGENT_SHARED_SECRET||'';
 const MAX_DLD_FILE=1024*1024;
 const LOCAL_ROOT=process.env.JNA_LOCAL_DATA_DIR||path.join(os.homedir(),'.jna-permit-bot');
+const LISTING_ROOT=process.env.LISTING_ROOT||path.join(os.homedir(),'Listing');
 const CURRENT_PERMIT_PATH=process.env.JNA_CURRENT_PERMIT_PATH||path.join(LOCAL_ROOT,'current-permit.json');
 if(!base||!secret){console.error('Missing COORDINATOR_URL or AGENT_SHARED_SECRET');process.exit(1);}
 
@@ -23,6 +24,40 @@ function mimeFromExt(ext){if(ext==='png')return'image/png';if(ext==='gif')return
 function validPermitContext(p){return !!(p&&['RENT','SALE'].includes(p.purpose)&&p.propertyType==='UNIT'&&p.deed?.area&&p.deed?.landNo&&p.deed?.buildingName&&p.deed?.unitNo);}
 async function savePermitContext(payload){if(!validPermitContext(payload))return false;await fs.mkdir(LOCAL_ROOT,{recursive:true});await fs.writeFile(CURRENT_PERMIT_PATH,JSON.stringify({purpose:payload.purpose,propertyType:payload.propertyType,deed:payload.deed,updatedAt:new Date().toISOString()},null,2));return true;}
 async function loadPermitContext(){try{const p=JSON.parse(await fs.readFile(CURRENT_PERMIT_PATH,'utf8'));return validPermitContext(p)?p:null;}catch{return null;}}
+
+function safeListingRef(value=''){
+  const ref=String(value).trim().replace(/[^a-zA-Z0-9._-]/g,'_');
+  if(!ref||ref==='.'||ref==='..')throw new Error('Invalid CRM listing reference');
+  return ref;
+}
+function caseFileName(label,file){
+  let ext=path.extname(file?.name||'').toLowerCase();
+  if(!ext){
+    const mime=String(file?.mimeType||'').toLowerCase();
+    ext=mime.includes('pdf')?'.pdf':mime.includes('png')?'.png':mime.includes('jpeg')||mime.includes('jpg')?'.jpg':'.bin';
+  }
+  return`${label}${ext}`;
+}
+async function writeCaseFile(caseDir,label,file){
+  if(!file?.base64)return null;
+  const target=path.join(caseDir,caseFileName(label,file));
+  const existing=await fs.readdir(caseDir).catch(()=>[]);
+  for(const name of existing){if(name===label||name.startsWith(`${label}.`))await fs.rm(path.join(caseDir,name),{force:true}).catch(()=>{});}
+  await fs.writeFile(target,Buffer.from(file.base64,'base64'));
+  return target;
+}
+async function syncListingCase(payload={}){
+  const listingRef=safeListingRef(payload.listingRef);
+  const caseDir=path.join(LISTING_ROOT,listingRef);
+  await fs.mkdir(caseDir,{recursive:true});
+  const saved={};
+  if(payload.titleDeed)saved.titleDeed=await writeCaseFile(caseDir,'Title Deed',payload.titleDeed);
+  if(payload.idCopy)saved.id=await writeCaseFile(caseDir,'ID',payload.idCopy);
+  // Only the signed NOC is accepted for permanent case storage.
+  if(payload.signedNoc)saved.noc=await writeCaseFile(caseDir,'NOC',payload.signedNoc);
+  if(payload.mktg)saved.mktg=await writeCaseFile(caseDir,'MKTG',payload.mktg);
+  return{status:'listing_case_synced',listingRef,caseDir,saved};
+}
 
 async function convertImageWithChrome(file,kind){
   const input=Buffer.from(file.base64,'base64');
@@ -121,6 +156,7 @@ async function resumeWorkflowState(taskPayload={}){
 
 async function execute(task){
   switch(task.type){
+    case 'sync_listing_case':return syncListingCase(task.payload||{});
     case 'test_login':return resumeWorkflowState(task.payload||{});
     case 'continue':return continueAfterCaptcha();
     case 'uae_pass':return continueUaePassLogin();
@@ -133,9 +169,6 @@ async function execute(task){
       try{marketing=await normalizeDldFile(task.payload?.marketingContract,'marketing');}catch(error){return{status:'file_normalization_failed',which:'marketing_contract',message:error.message};}
       try{advertisement=await normalizeDldFile(task.payload?.advertisementFormat,'advertisement');}catch(error){return{status:'file_normalization_failed',which:'advertisement_format',message:error.message};}
       const finalPayload={...task.payload,marketingContract:{path:inMemoryUpload(marketing)},advertisementFormat:{path:inMemoryUpload(advertisement)}};
-
-      // Upload each document only once. Re-running finalizeSecondaryListing resets Telerik's
-      // async upload controls and can make an already-green attachment disappear.
       const result=await finalizeSecondaryListing(finalPayload);
       if(result?.status!=='listing_saved')return result;
       await new Promise(r=>setTimeout(r,1200));
@@ -147,7 +180,7 @@ async function execute(task){
   }
 }
 
-console.log('JnA local browser agent started. Keep this terminal open.');
+console.log(`JnA local browser agent started. Listing files: ${LISTING_ROOT}`);
 while(true){
   try{
     const {task}=await api('/agent/poll');
