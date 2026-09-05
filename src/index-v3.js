@@ -96,5 +96,33 @@ replaceExact(
   'post-CRM MKTG generation'
 );
 
+// Recovery for a CRM listing that was already created while the local office agent was offline.
+// This never creates another Pixxi listing; it only retries local case sync + MKTG.png.
+replaceExact(
+  "  if(command==='/createcrm'){try{await createCrmAndNoc(chatId,caseState);}catch(e){if(caseState){caseState.step='draft_ready';await saveListingCaseState(chatId,caseState);}await sendMessage(chatId,`CRM/NOC workflow failed: ${e.message}`);}return;}",
+  `  if(command==='/syncase'){
+    if(!caseState?.listingRef){await sendMessage(chatId,'No existing CRM case is available to sync. Create the CRM listing first.');return;}
+    await sendMessage(chatId,\`Retrying local case sync for \${caseState.listingRef}. This will NOT create another Pixxi listing.\`);
+    const sync=await runBrowserTask('sync_listing_case',{listingRef:caseState.listingRef,titleDeed:caseState.titleDeedFile,idCopy:caseState.idFile},60000).catch(error=>({status:'agent_error',message:error.message}));
+    if(sync.status!=='listing_case_synced'){
+      await sendMessage(chatId,\`Case folder sync failed: \${sync.message||sync.status}. Make sure the office agent is running, then send /syncase again.\`);return;
+    }
+    await sendMessage(chatId,\`Case folder synced: Listing/\${caseState.listingRef}/\\nTitle Deed and ID saved. Creating MKTG.png…\`);
+    const mktg=await runBrowserTask('generate_mktg_image',{listingRef:caseState.listingRef,listing:{
+      listingType:caseState.listingType,title:caseState.generated?.title||'',description:caseState.generated?.description||'',
+      building:caseState.building,area:caseState.area,propertyType:caseState.crmHouseType,unitNo:caseState.unitNo,
+      price:caseState.price,size:caseState.size,bedrooms:caseState.bedrooms,bathrooms:caseState.bathrooms,
+      furnishing:caseState.furnishing,view:caseState.view
+    }},90000).catch(error=>({status:'agent_error',message:error.message}));
+    if(mktg.status!=='mktg_saved'){
+      await sendMessage(chatId,\`Case folder is safe, but MKTG.png failed: \${mktg.message||mktg.status}. Send /syncase again after the office agent is ready.\`);return;
+    }
+    caseState.mktgPath=mktg.path;caseState.mktgSaved=true;await saveListingCaseState(chatId,caseState);
+    await sendMessage(chatId,\`Case \${caseState.listingRef} synced successfully.\\n\\nTitle Deed: saved\\nID: saved\\nMKTG.png: saved\\n\\nNo duplicate Pixxi listing was created.\`);return;
+  }
+  if(command==='/createcrm'){try{await createCrmAndNoc(chatId,caseState);}catch(e){if(caseState){caseState.step='draft_ready';await saveListingCaseState(chatId,caseState);}await sendMessage(chatId,\`CRM/NOC workflow failed: \${e.message}\`);}return;}`,
+  'sync existing CRM case command'
+);
+
 await fs.writeFile(runtimePath,source,'utf8');
 await import(`./.index-v2-runtime.mjs?ts=${Date.now()}`);
