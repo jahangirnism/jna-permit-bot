@@ -26,12 +26,12 @@ export async function pixxiLogin(force=false){
   if(!force&&cachedToken&&Date.now()<tokenExpiresAt)return cachedToken;
   const {email,password}=adminCredentials();
   const response=await fetch(`${PIXXI_BASE}/login`,{
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password})
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:email,password})
   });
   const data=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(`Pixxi admin login failed (${response.status})`);
+  if(!response.ok)throw new Error(`Pixxi admin login failed (${response.status}): ${data?.message||data?.msg||'unknown error'}`);
   const token=extractToken(data);
-  if(!token)throw new Error('Pixxi admin login succeeded but no bearer token was returned');
+  if(!token)throw new Error(`Pixxi admin login succeeded but no bearer token was returned${data?.message?`: ${data.message}`:''}`);
   cachedToken=token;
   tokenExpiresAt=Date.now()+45*60*1000;
   return token;
