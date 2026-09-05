@@ -12,9 +12,18 @@ export function normalizeHouseType(value){
 
 export function normalizeCompletion(value){
   const v=clean(value).toUpperCase().replace(/[\s-]+/g,'_');
-  if(['READY','COMPLETED','COMPLETE'].includes(v))return 'READY';
+  if(['READY','COMPLETED','COMPLETE'].includes(v))return 'COMPLETED';
   if(['OFF_PLAN','OFFPLAN'].includes(v))return 'OFF_PLAN';
-  throw new Error('Completion status must be READY or OFF_PLAN');
+  if(['OFF_PLAN_PRIMARY','OFFPLAN_PRIMARY'].includes(v))return 'OFF_PLAN_PRIMARY';
+  throw new Error('Completion status must be READY/COMPLETED, OFF_PLAN, or OFF_PLAN_PRIMARY');
+}
+
+function normalizeFurnishing(value){
+  const v=clean(value).toUpperCase().replace(/[\s-]+/g,'_');
+  if(['HAS','FULLY_FURNISHED','FURNISHED','FULL'].includes(v))return 'HAS';
+  if(['SEMI','SEMI_FURNISHED','PARTLY_FURNISHED','PART_FURNISHED'].includes(v))return 'SEMI';
+  if(['NONE','UNFURNISHED','NOT_FURNISHED'].includes(v))return 'NONE';
+  return clean(value);
 }
 
 export function bedroomNumber(value){
@@ -36,11 +45,9 @@ export function pixxiListingPayload(state={}){
     bedRoomNum:bedroomNumber(state.bedrooms),
     size:number(state.size),
     price:Math.round(number(state.price)),
-    isFurniture:clean(state.furnishing).toUpperCase().replace(/[\s-]+/g,'_'),
+    isFurniture:normalizeFurnishing(state.furnishing),
     views:clean(state.view)?[clean(state.view)]:[],
-    status:'ACTIVE',
-    cityId:41,
-    cityName:'Dubai'
+    status:'ACTIVE',cityId:41,cityName:'Dubai'
   };
   if(propertyType==='SELL')payload.sellParameter={completionStatus};
   else payload.rentParameter={completionStatus};
