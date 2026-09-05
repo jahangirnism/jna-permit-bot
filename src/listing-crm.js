@@ -36,7 +36,9 @@ export function pixxiListingPayload(state={}){
   if(!state.generated?.title||!state.generated?.description)throw new Error('AI listing draft is missing');
   const propertyType=/sale|sell/i.test(clean(state.listingType))?'SELL':'RENT';
   const houseType=normalizeHouseType(state.crmHouseType);
-  const completionStatus=normalizeCompletion(state.completionStatus);
+  // RENT listings are necessarily ready/completed in this workflow. Completion
+  // choices are only collected for SALE listings.
+  const completionStatus=propertyType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
   const payload={
     name:state.generated.title,
     description:state.generated.description,
@@ -50,7 +52,7 @@ export function pixxiListingPayload(state={}){
     status:'ACTIVE',cityId:41,cityName:'Dubai'
   };
   if(propertyType==='SELL')payload.sellParameter={completionStatus};
-  else payload.rentParameter={completionStatus};
+  else payload.rentParameter={completionStatus:'COMPLETED'};
   return payload;
 }
 
@@ -78,6 +80,8 @@ export function nocPayload(state={}){
   const agent=state.nocAgent||{};
   const house=normalizeHouseType(state.crmHouseType);
   const labels={APARTMENT:'Apartment',VILLA:'Villa',TOWNHOUSE:'Townhouse',OFFICE:'Office',LAND:'Land'};
+  const listingType=/sale|sell/i.test(clean(state.listingType))?'SALE':'RENT';
+  const completionStatus=listingType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
   return{
     agentName:agent.name||'',agentBRN:agent.brn||'',agentMobile:agent.phone||'',agentEmail:agent.email||'',
     owner1Name:clean(state.ownerName),owner1ID:clean(state.ownerId),owner1Mobile:clean(state.ownerMobile),owner1Email:clean(state.ownerEmail),
@@ -86,7 +90,7 @@ export function nocPayload(state={}){
     titleDeed:clean(state.titleDeedNo),plotNo:clean(state.plotNo),unitNo:clean(state.unitNo),
     propSize:clean(state.size),propParking:clean(state.parking)||'1',listingPrice:clean(state.price),
     bedsLabel:clean(state.bedrooms),propTypeLabel:labels[house],propTypeValue:house,
-    completionStatus:normalizeCompletion(state.completionStatus),startDate,endDate,
+    completionStatus,startDate,endDate,
     commission:clean(state.commission),contractType:state.contractType==='EXCLUSIVE'?'Exclusive':'Non-Exclusive'
   };
 }
