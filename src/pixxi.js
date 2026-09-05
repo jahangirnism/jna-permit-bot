@@ -30,13 +30,23 @@ export async function pixxiLogin(force=false){
   cachedToken=token;tokenExpiresAt=Date.now()+45*60*1000;return token;
 }
 
+function usefulError(data){
+  const candidates=[data?.message,data?.msg,data?.error,data?.data?.message,data?.data?.msg,data?.data?.error,data?.errors];
+  for(const value of candidates){
+    if(typeof value==='string'&&value.trim())return value.trim();
+    if(Array.isArray(value)&&value.length)return value.map(v=>typeof v==='string'?v:JSON.stringify(v)).join('; ');
+    if(value&&typeof value==='object')return JSON.stringify(value);
+  }
+  try{const raw=JSON.stringify(data);return raw&&raw!=='{}'?raw.slice(0,700):'unknown error';}catch{return'unknown error';}
+}
+
 async function pixxiRequest(pathname,{method='GET',body}={}){
   for(let attempt=1;attempt<=2;attempt++){
     const token=await pixxiLogin(attempt===2);
     const response=await fetch(`${PIXXI_BASE}${pathname}`,{method,headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
     if((response.status===401||response.status===403)&&attempt===1){cachedToken=null;tokenExpiresAt=0;continue;}
     const data=await response.json().catch(()=>({}));
-    if(!response.ok)throw new Error(`Pixxi ${method} ${pathname} failed (${response.status}): ${data?.message||data?.msg||data?.error||'unknown error'}`);
+    if(!response.ok)throw new Error(`Pixxi ${method} ${pathname} failed (${response.status}): ${usefulError(data)}`);
     return data;
   }
   throw new Error('Pixxi request failed after re-authentication');
@@ -74,8 +84,8 @@ export function extractListingReference(data){
 }
 function pixxiBodyFailure(data){
   const code=Number(data?.statusCode??data?.code);
-  if(Number.isFinite(code)&&code>=400)return data?.message||data?.msg||data?.error||`Pixxi returned status ${code}`;
-  if(data?.success===false)return data?.message||data?.msg||data?.error||'Pixxi reported the create request failed';
+  if(Number.isFinite(code)&&code>=400)return usefulError(data);
+  if(data?.success===false)return usefulError(data);
   return'';
 }
 export async function createPixxiListing(payload){
@@ -83,7 +93,7 @@ export async function createPixxiListing(payload){
   const data=await pixxiRequest('/v1/property',{method:'POST',body:payload});
   const failure=pixxiBodyFailure(data);if(failure)throw new Error(`Pixxi listing creation failed: ${failure}`);
   const listingRef=extractListingReference(data);
-  if(!listingRef)throw new Error(`Pixxi did not confirm listing creation or return a CRM reference. Response keys: ${Object.keys(data||{}).slice(0,12).join(', ')||'none'}`);
+  if(!listingRef)throw new Error(`Pixxi did not confirm listing creation or return a CRM reference. Response: ${usefulError(data)}`);
   return{listingRef,data};
 }
 
