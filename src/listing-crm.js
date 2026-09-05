@@ -44,8 +44,6 @@ export function pixxiListingPayload(state={}){
   if(!state.generated?.title||!state.generated?.description)throw new Error('AI listing draft is missing');
   const propertyType=/sale|sell/i.test(clean(state.listingType))?'SELL':'RENT';
   const houseType=normalizeHouseType(state.crmHouseType);
-  // RENT listings are necessarily ready/completed in this workflow. Completion
-  // choices are only collected for SALE listings.
   const completionStatus=propertyType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
   const payload={
     name:state.generated.title,
@@ -53,6 +51,7 @@ export function pixxiListingPayload(state={}){
     propertyType,
     houseType:[houseType],
     bedRoomNum:bedroomNumber(state.bedrooms),
+    bathRoomNum:Math.max(0,Math.trunc(number(state.bathrooms))),
     size:number(state.size),
     price:Math.round(number(state.price)),
     isFurniture:normalizeFurnishing(state.furnishing),
