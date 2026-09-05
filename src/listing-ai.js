@@ -46,6 +46,7 @@ export function buildListingPrompts(input={}){
   const building=cleanText(input.building);
   const area=cleanText(input.area)||'Dubai';
   const bedrooms=cleanText(input.bedrooms)||'Not specified';
+  const bathrooms=cleanText(input.bathrooms)||'Not specified';
   const size=cleanText(input.size)||'Not specified';
   const listingType=/sale|sell/i.test(cleanText(input.listingType))?'For Sale':'For Rent';
   const price=cleanText(input.price)||'Not specified';
@@ -66,7 +67,7 @@ JnA House — Premium Data-Driven Dubai Brokerage
 Contact: info@jnahouse.com or WhatsApp 971585719898
 Output must be ONE valid JSON object with exactly two string fields: title and description. Escape line breaks inside description as \\n. Do not use markdown fences or commentary.`;
 
-  const user=`Building: ${building}\nArea: ${area}\nBedrooms: ${bedrooms}\nSize: ${size} sq ft\nType: ${listingType}\nPrice: AED ${price}\nFurnishing: ${furnishing}\nView: ${view}\nNotes: ${notes}\n\nCreate the best factual listing you can from these details. Choose the title and description length yourself. Return ONLY JSON: {"title":"...","description":"..."}`;
+  const user=`Building: ${building}\nArea: ${area}\nBedrooms: ${bedrooms}\nBathrooms: ${bathrooms}\nSize: ${size} sq ft\nType: ${listingType}\nPrice: AED ${price}\nFurnishing: ${furnishing}\nView: ${view}\nNotes: ${notes}\n\nCreate the best factual listing you can from these details. Choose the title and description length yourself. Return ONLY JSON: {"title":"...","description":"..."}`;
   return{system,user};
 }
 
