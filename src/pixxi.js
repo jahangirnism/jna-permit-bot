@@ -22,6 +22,11 @@ function normalizePhone(value=''){
   return digits;
 }
 
+function staffRows(data){
+  const candidates=data?.data?.list||data?.data?.records||data?.data?.rows||data?.data||data?.list||data?.records||[];
+  return Array.isArray(candidates)?candidates:[];
+}
+
 export async function pixxiLogin(force=false){
   if(!force&&cachedToken&&Date.now()<tokenExpiresAt)return cachedToken;
   const {email,password}=adminCredentials();
@@ -56,13 +61,35 @@ async function pixxiRequest(pathname,{method='GET',body}={}){
 export async function findPixxiAgentByMobile(mobile){
   const wanted=normalizePhone(mobile);
   if(!wanted)throw new Error('Agent mobile is required');
-  const query=encodeURIComponent(String(mobile).replace(/^\+/,''));
-  const data=await pixxiRequest(`/system/user/list?nickName=${query}&pageNum=1&deptId=1406&pageSize=50`);
-  const candidates=data?.data?.list||data?.data?.records||data?.data||[];
-  const rows=Array.isArray(candidates)?candidates:[];
-  const exact=rows.find(row=>normalizePhone(row?.phone||row?.mobile||row?.tel)===wanted);
-  if(exact)return exact;
-  return rows.find(row=>normalizePhone(row?.phone||row?.mobile||row?.tel).endsWith(wanted.slice(-9)))||null;
+
+  // Pixxi's Staff screen is phone-driven, but its list API does not reliably
+  // filter by phone when the value is sent through nickName. Read staff pages
+  // and match the phone locally instead. The returned row often already contains
+  // email/BRN even though those columns are not visible on the Staff table.
+  for(let pageNum=1;pageNum<=10;pageNum++){
+    const data=await pixxiRequest(`/system/user/list?pageNum=${pageNum}&deptId=1406&pageSize=100`);
+    const rows=staffRows(data);
+    const exact=rows.find(row=>normalizePhone(row?.phone||row?.mobile||row?.tel)===wanted);
+    if(exact)return exact;
+    const suffix=rows.find(row=>{
+      const phone=normalizePhone(row?.phone||row?.mobile||row?.tel);
+      return phone&&phone.endsWith(wanted.slice(-9));
+    });
+    if(suffix)return suffix;
+    if(rows.length<100)break;
+  }
+  return null;
+}
+
+export function pixxiAgentSummary(row={}){
+  return{
+    id:row?.id||row?.userId||row?.staffId||'',
+    name:row?.nickName||row?.realName||row?.name||row?.userName||row?.username||'',
+    phone:row?.phone||row?.mobile||row?.tel||'',
+    email:row?.email||row?.mail||'',
+    brn:row?.brn||row?.BRN||row?.brokerRegistrationNumber||row?.brokerNo||'',
+    role:row?.roleName||row?.role||row?.position||''
+  };
 }
 
 export function extractListingReference(data){
