@@ -51,13 +51,15 @@ export function pixxiListingPayload(state={}){
     propertyType,
     houseType:[houseType],
     bedRoomNum:bedroomNumber(state.bedrooms),
-    bathRoomNum:Math.max(0,Math.trunc(number(state.bathrooms))),
     size:number(state.size),
     price:Math.round(number(state.price)),
     isFurniture:normalizeFurnishing(state.furnishing),
     views:clean(state.view)?[clean(state.view)]:[],
     status:'ACTIVE',cityId:41,cityName:'Dubai'
   };
+  // Keep the create payload identical to the previously working Pixxi schema.
+  // Bathroom count is still collected and used by AI/MKTG, but is not sent here
+  // until Pixxi's accepted bathroom field name is confirmed.
   if(propertyType==='SELL')payload.sellParameter={completionStatus};
   else payload.rentParameter={completionStatus:'COMPLETED'};
   return payload;
