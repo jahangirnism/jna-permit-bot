@@ -22,9 +22,36 @@ function normalizePhone(value=''){
   return digits;
 }
 
+function looksLikeStaffRow(row){
+  return row&&typeof row==='object'&&!Array.isArray(row)&&(
+    row.id||row.userId||row.staffId||row.nickName||row.realName||row.name||
+    row.phone||row.mobile||row.tel||row.email||row.brn||row.BRN
+  );
+}
+
 function staffRows(data){
-  const candidates=data?.data?.list||data?.data?.records||data?.data?.rows||data?.data||data?.list||data?.records||[];
-  return Array.isArray(candidates)?candidates:[];
+  const direct=[
+    data?.data?.list,data?.data?.records,data?.data?.rows,data?.data?.content,data?.data?.items,
+    data?.list,data?.records,data?.rows,data?.content,data?.items,
+    Array.isArray(data?.data)?data.data:null
+  ];
+  for(const value of direct){
+    if(Array.isArray(value)&&value.some(looksLikeStaffRow))return value;
+  }
+  const queue=[data?.data,data].filter(Boolean);
+  const seen=new Set();
+  while(queue.length){
+    const node=queue.shift();
+    if(!node||typeof node!=='object'||seen.has(node))continue;
+    seen.add(node);
+    if(Array.isArray(node)){
+      if(node.some(looksLikeStaffRow))return node;
+      for(const item of node)queue.push(item);
+    }else{
+      for(const value of Object.values(node))if(value&&typeof value==='object')queue.push(value);
+    }
+  }
+  return[];
 }
 
 export async function pixxiLogin(force=false){
@@ -62,10 +89,6 @@ export async function findPixxiAgentByMobile(mobile){
   const wanted=normalizePhone(mobile);
   if(!wanted)throw new Error('Agent mobile is required');
 
-  // Pixxi's Staff screen is phone-driven, but its list API does not reliably
-  // filter by phone when the value is sent through nickName. Read staff pages
-  // and match the phone locally instead. The returned row often already contains
-  // email/BRN even though those columns are not visible on the Staff table.
   for(let pageNum=1;pageNum<=10;pageNum++){
     const data=await pixxiRequest(`/system/user/list?pageNum=${pageNum}&deptId=1406&pageSize=100`);
     const rows=staffRows(data);
@@ -76,9 +99,25 @@ export async function findPixxiAgentByMobile(mobile){
       return phone&&phone.endsWith(wanted.slice(-9));
     });
     if(suffix)return suffix;
-    if(rows.length<100)break;
+    if(rows.length>0&&rows.length<100)break;
+    if(rows.length===0)break;
   }
   return null;
+}
+
+export async function getPixxiStaffDebug(){
+  const data=await pixxiRequest('/system/user/list?pageNum=1&deptId=1406&pageSize=100');
+  const rows=staffRows(data);
+  return{
+    rowCount:rows.length,
+    topLevelKeys:Object.keys(data||{}).slice(0,20),
+    dataKeys:data?.data&&typeof data.data==='object'&&!Array.isArray(data.data)?Object.keys(data.data).slice(0,20):[],
+    samples:rows.slice(0,5).map(row=>({
+      id:row?.id||row?.userId||row?.staffId||'',
+      name:row?.nickName||row?.realName||row?.name||row?.userName||'',
+      phone:row?.phone||row?.mobile||row?.tel||''
+    }))
+  };
 }
 
 export function pixxiAgentSummary(row={}){
@@ -106,9 +145,6 @@ export async function createPixxiListing(payload){
 }
 
 export async function getPixxiCurrentUser(){
-  // A successful /login response with a bearer token is sufficient to prove the
-  // admin credentials are valid. Pixxi's legacy /v1/user/getInfo route can return
-  // 404 for some admin accounts, so do not misreport that as an authentication failure.
   await pixxiLogin();
   try{
     return await pixxiRequest('/v1/user/getInfo');
