@@ -9,6 +9,11 @@ function anthropicKey(){
 }
 function cleanText(value){return String(value??'').trim();}
 function charCount(value){return [...cleanText(value)].length;}
+function decodeJsonishString(value){
+  return cleanText(String(value??''))
+    .replace(/\\r\\n/g,'\n').replace(/\\n/g,'\n').replace(/\\t/g,'\t')
+    .replace(/\\"/g,'"').replace(/\\\\/g,'\\');
+}
 function extractJson(text){
   const raw=cleanText(text);
   if(!raw)throw new Error('Claude returned an empty response');
@@ -16,7 +21,28 @@ function extractJson(text){
   const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if(fenced){try{return JSON.parse(fenced[1].trim());}catch{}}
   const first=raw.indexOf('{'),last=raw.lastIndexOf('}');
-  if(first>=0&&last>first){try{return JSON.parse(raw.slice(first,last+1));}catch{}}
+  if(first>=0&&last>first){
+    const candidate=raw.slice(first,last+1);
+    try{return JSON.parse(candidate);}catch{}
+    // Claude sometimes emits literal line breaks inside the description JSON string.
+    // Recover the two expected fields without accepting any other structure.
+    const titleMatch=candidate.match(/["“”']?title["“”']?\s*:\s*["“]([\s\S]*?)["”]\s*,\s*["“”']?description["“”']?\s*:/i);
+    const descStart=candidate.match(/["“”']?description["“”']?\s*:\s*["“]/i);
+    if(titleMatch&&descStart){
+      const start=(descStart.index||0)+descStart[0].length;
+      let tail=candidate.slice(start).trim();
+      tail=tail.replace(/["”]\s*}\s*$/,'');
+      const title=decodeJsonishString(titleMatch[1]);
+      const description=decodeJsonishString(tail);
+      if(title&&description)return{title,description};
+    }
+  }
+  // Final conservative fallback for responses containing only TITLE/DESCRIPTION labels.
+  const labelled=raw.match(/(?:^|\n)\s*TITLE\s*[:\-]\s*(.+?)\s*\n+\s*DESCRIPTION\s*[:\-]\s*([\s\S]+)$/i);
+  if(labelled){
+    const title=cleanText(labelled[1]),description=cleanText(labelled[2]);
+    if(title&&description)return{title,description};
+  }
   throw new Error('Claude did not return valid listing JSON');
 }
 
@@ -45,6 +71,7 @@ RULES:
 - NEVER invent or imply unverified facts, rankings or comparisons. Do not claim best-managed, most sought-after, low service charges, highest ROI, cheapest, best value, rare, minutes-to, exact travel times, amenities, views or availability unless supplied in the input
 - You do NOT have live PropertyFinder/Bayut browsing in this request. Treat competitor research as context only and never fabricate research findings
 - If a building/community fact is not confidently known from the supplied input, omit it rather than guess
+- Output must be ONE valid JSON object. Escape every line break inside description as \\n. Do not use markdown fences or commentary.
 
 Use this exact description structure:
 [One-line opener]
@@ -63,7 +90,7 @@ Return ONLY valid JSON: {"title":"...","description":"..."}`;
   return{system,user};
 }
 
-async function callClaude(system,user){
+async function rawClaude(system,user){
   const response=await fetch(ANTHROPIC_URL,{
     method:'POST',
     headers:{'content-type':'application/json','x-api-key':anthropicKey(),'anthropic-version':'2023-06-01'},
@@ -75,10 +102,22 @@ async function callClaude(system,user){
     throw new Error(`Claude listing generation failed (${response.status}): ${message}`);
   }
   const text=(Array.isArray(data?.content)?data.content:[]).filter(x=>x?.type==='text').map(x=>x.text).join('\n').trim();
-  const parsed=extractJson(text);
-  const title=cleanText(parsed?.title),description=cleanText(parsed?.description);
-  if(!title||!description)throw new Error('Claude listing response is missing title or description');
-  return{title,description,model:data?.model||MODEL};
+  return{text,model:data?.model||MODEL};
+}
+
+async function callClaude(system,user){
+  let lastError;
+  for(let attempt=1;attempt<=2;attempt++){
+    const prompt=attempt===1?user:`${user}\n\nYour previous response was not parseable as the required JSON object. Return ONLY one valid JSON object with exactly two string fields: title and description. Escape all description line breaks as \\n. No markdown fences.`;
+    const {text,model}=await rawClaude(system,prompt);
+    try{
+      const parsed=extractJson(text);
+      const title=cleanText(parsed?.title),description=cleanText(parsed?.description);
+      if(!title||!description)throw new Error('Claude listing response is missing title or description');
+      return{title,description,model};
+    }catch(error){lastError=error;console.warn(`Claude listing parse attempt ${attempt} failed:`,error.message);}
+  }
+  throw lastError||new Error('Claude did not return valid listing JSON');
 }
 
 function validationIssues(draft){
