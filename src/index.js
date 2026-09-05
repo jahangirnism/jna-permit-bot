@@ -20,6 +20,7 @@ async function telegram(method,body={}){
   return data.result;
 }
 async function sendMessage(chatId,text){return telegram('sendMessage',{chat_id:chatId,text,disable_web_page_preview:true});}
+function workflowPayload(state){return state?.deed&&state?.purpose&&state?.propertyType?{deed:state.deed,purpose:state.purpose,propertyType:state.propertyType,step:state.step}:null;}
 
 function resultMessage(result){
   switch(result.status){
@@ -35,8 +36,8 @@ function resultMessage(result){
     case 'uae_pass_id_field_not_found':return 'UAE PASS opened, but the Emirates ID field was not detected in the office Chrome window.';
     case 'uae_pass_login_button_not_found':return 'The Emirates ID was filled, but the UAE PASS Login button was not detected.';
     case 'uae_pass_approval_required':return `UAE PASS APPROVAL REQUIRED\n\nSelect number ${result.challenge} in your UAE PASS app.\n\nI will keep checking automatically after approval.`;
-    case 'real_estate_admin_profile_selected':return 'REAL ESTATE OFFICE ADMIN profile selected successfully. The local Chrome session will be reused.';
-    case 'session_active':return 'DLD/Trakheesi session is active on the office computer.';
+    case 'real_estate_admin_profile_selected':return result.needsPermitContext?'REAL ESTATE OFFICE ADMIN is active. The browser session is recovered, but the local agent does not yet have this permit’s property context.':'REAL ESTATE OFFICE ADMIN profile selected successfully. Continuing from the current Trakheesi session.';
+    case 'session_active':return result.needsPermitContext?'DLD/Trakheesi session is active, but the local agent does not yet have this permit’s property context.':'DLD/Trakheesi session is active on the office computer.';
     case 'real_estate_admin_profile_not_found':return 'Multiple DLD profiles were found, but REAL ESTATE OFFICE ADMIN was not detected.';
     case 'admin_profile_radio_not_found':return 'REAL ESTATE OFFICE ADMIN was detected, but its selection control was not found.';
     case 'trakheesi_not_found':return 'DLD dashboard opened, but the Trakheesi card was not detected.';
@@ -120,15 +121,19 @@ async function maybePrepareListing(chatId,state,result){if(state?.step==='ready_
 function cancelAutoResumeWatch(chatId){autoResumeWatchers.delete(chatId);}
 async function applyRecoveredBrowserState(chatId,fallbackState,result){
   let state=permitState.get(chatId)||fallbackState;
-  if(result.status==='listing_value_ready'){
+  if(['listing_value_ready','property_selected'].includes(result.status)){
     if(!state)state={};
     state.step='value';state.resumed=true;permitState.set(chatId,state);
-    await sendMessage(chatId,'Manual browser step completed. I detected the current listing screen automatically.\n\nPlease enter the property VALUE in AED.\nExample: 50000');
+    await sendMessage(chatId,'I recovered the current listing and continued to the next safe step.\n\nPlease enter the property VALUE in AED.\nExample: 50000');
     return true;
   }
   if(['session_active','real_estate_admin_profile_selected'].includes(result.status)&&state?.step==='ready_for_dld'){
-    await sendMessage(chatId,'Manual DLD verification completed. Continuing the permit workflow automatically…');
+    await sendMessage(chatId,'DLD session recovered. Continuing the permit workflow automatically…');
     await prepareListing(chatId,state);
+    return true;
+  }
+  if(['session_active','real_estate_admin_profile_selected'].includes(result.status)&&result.needsPermitContext){
+    await sendMessage(chatId,'The DLD session is active, but the previous Railway process lost the permit details. I will not guess the property. For this one recovery only, send /newpermit and upload the Title Deed again. After that, the office agent will keep the permit context locally so browser/Railway restarts will not cause this loop again.');
     return true;
   }
   return false;
@@ -144,7 +149,7 @@ function startAutoResumeWatch(chatId,state){
         await new Promise(r=>setTimeout(r,5000));
         if(autoResumeWatchers.get(chatId)!==marker)return;
         const current=permitState.get(chatId)||state;
-        const result=await runBrowserTask('resume_listing',{},45000).catch(error=>({status:'agent_error',message:error.message}));
+        const result=await runBrowserTask('resume_listing',{workflow:workflowPayload(current)},70000).catch(error=>({status:'agent_error',message:error.message}));
         if(MANUAL_BROWSER_STATES.has(result.status))continue;
         if(await applyRecoveredBrowserState(chatId,current,result))return;
         if(['agent_offline','agent_not_configured','no_active_session'].includes(result.status))return;
@@ -159,9 +164,10 @@ async function runLoginTest(chatId,state){
   loginTestRunning=true;
   try{
     await sendMessage(chatId,'Checking the DLD session on the office computer…');
-    const result=await runBrowserTask('test_login',{},70000);
+    const result=await runBrowserTask('test_login',{workflow:workflowPayload(state)},90000);
     console.log('Local DLD test status:',result.status,result.url||'');
     await sendMessage(chatId,resultMessage(result));
+    if(await applyRecoveredBrowserState(chatId,state,result))return;
     await maybePrepareListing(chatId,state,result);
     if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
   }finally{loginTestRunning=false;}
@@ -205,7 +211,7 @@ async function handleUpdate(update){
 
   if(command==='/resumelisting'){
     await sendMessage(chatId,'Checking the current DLD/Trakheesi browser state on the office computer…');
-    const result=await runBrowserTask('resume_listing',{},50000);
+    const result=await runBrowserTask('resume_listing',{workflow:workflowPayload(state)},90000);
     await sendMessage(chatId,resultMessage(result));
     if(await applyRecoveredBrowserState(chatId,state,result)){cancelAutoResumeWatch(chatId);return;}
     if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
