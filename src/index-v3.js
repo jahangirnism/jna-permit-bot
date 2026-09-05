@@ -42,6 +42,12 @@ replaceExact(
 );
 
 replaceExact(
+  "if(!state.furnishing){state.step='furnishing';return sendMessage(chatId,'Furnishing? Furnished, Unfurnished, or Semi Furnished');}",
+  "if(!state.furnishing){state.step='furnishing';return sendMessage(chatId,'Select furnishing:',replyChoices(['Furnished','Semi Furnished','Unfurnished']));}",
+  'furnishing choices'
+);
+
+replaceExact(
   "case'crm_house_type':try{state.crmHouseType=normalizeHouseType(v);}catch(e){await sendMessage(chatId,e.message);return true;}break;",
   "case'crm_house_type':try{state.crmHouseType=normalizeHouseType(v);}catch(e){await sendMessage(chatId,'Please choose a property type.',replyChoices(['APARTMENT','VILLA','TOWNHOUSE','OFFICE','LAND']));return true;}break;",
   'property type validation'
@@ -52,6 +58,19 @@ replaceExact(
   `case'bedrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bedrooms must be numeric. Use 0 for Studio, then 1, 2, 3, etc.');return true;}state.bedrooms=v;break;
 case'bathrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bathrooms must be numeric. Example: 1, 2, 3.');return true;}state.bathrooms=v;break;`,
   'numeric bedroom bathroom validation'
+);
+
+replaceExact(
+  "case'furnishing':state.furnishing=v;break;",
+  `case'furnishing':{
+    const f=v.toUpperCase().replace(/[\\s_-]+/g,' ').trim();
+    if(f==='FURNISHED'||f==='FULLY FURNISHED')state.furnishing='Furnished';
+    else if(f==='SEMI FURNISHED'||f==='SEMI')state.furnishing='Semi Furnished';
+    else if(f==='UNFURNISHED'||f==='UN FURNISHED')state.furnishing='Unfurnished';
+    else{await sendMessage(chatId,'Please select one of the furnishing options below.',replyChoices(['Furnished','Semi Furnished','Unfurnished']));return true;}
+    break;
+  }`,
+  'furnishing validation choices'
 );
 
 replaceExact(
