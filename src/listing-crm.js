@@ -26,16 +26,18 @@ export function normalizeCompletion(value){
 }
 
 function normalizeFurnishing(value){
-  const v=clean(value).toUpperCase().replace(/[\s-]+/g,'_');
-  if(['HAS','FULLY_FURNISHED','FURNISHED','FULL'].includes(v))return 'HAS';
-  if(['SEMI','SEMI_FURNISHED','PARTLY_FURNISHED','PART_FURNISHED'].includes(v))return 'SEMI';
-  if(['NONE','UNFURNISHED','NOT_FURNISHED'].includes(v))return 'NONE';
-  throw new Error('Furnishing must be Furnished, Semi Furnished, or Unfurnished');
+  const raw=clean(value).toUpperCase();
+  const v=raw.replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  // Check negative/semi forms before generic FURNISHED because UNFURNISHED contains FURNISHED.
+  if(['NONE','NO','UNFURNISHED','UN_FURNISHED','NOT_FURNISHED','NOT_FURNISH','WITHOUT_FURNITURE'].includes(v)||v.includes('UNFURNISH'))return 'NONE';
+  if(['SEMI','SEMI_FURNISHED','SEMI_FURNISH','PARTLY_FURNISHED','PART_FURNISHED','PARTIAL_FURNISHED'].includes(v)||v.startsWith('SEMI_')||v.includes('PARTLY_FURNISH')||v.includes('PART_FURNISH'))return 'SEMI';
+  if(['HAS','YES','FULLY_FURNISHED','FULLY_FURNISH','FURNISHED','FURNISH','FULL'].includes(v)||v.includes('FULLY_FURNISH')||v==='FURNITURE')return 'HAS';
+  throw new Error(`Furnishing value "${clean(value)}" was not recognized. Choose Furnished, Semi Furnished, or Unfurnished.`);
 }
 
 function normalizeView(value){
   const raw=clean(value);
-  if(!raw)return'';
+  if(!raw||raw==='-')return'';
   const v=raw.toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
   if(v.endsWith('_VIEW'))return v;
   const aliases={
@@ -76,8 +78,6 @@ export function pixxiListingPayload(state={}){
   const houseType=normalizeHouseType(state.crmHouseType);
   const completionStatus=propertyType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
   const view=normalizeView(state.view);
-  // Claude is intentionally unrestricted. Only the values sent to Pixxi are
-  // capped to the lengths used by the previously working CRM flow.
   const payload={
     name:truncateText(state.generated.title,50),
     description:truncateText(state.generated.description,1500),
@@ -90,8 +90,6 @@ export function pixxiListingPayload(state={}){
     views:view?[view]:[],
     status:'ACTIVE',cityId:41,cityName:'Dubai'
   };
-  // Bathroom count is collected and used by AI/MKTG, but is not sent until
-  // Pixxi's accepted bathroom field name is confirmed.
   if(propertyType==='SELL')payload.sellParameter={completionStatus};
   else payload.rentParameter={completionStatus:'COMPLETED'};
   return payload;
