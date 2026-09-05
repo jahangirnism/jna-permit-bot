@@ -81,14 +81,10 @@ async function prepareListingWithRetry(payload){
   for(let attempt=1;attempt<=6;attempt++){
     result=await prepareSecondaryListing(payload);
     if(result?.status==='property_selected')return result;
-
-    // Never trust a recoverable error until we inspect the live browser again.
-    // The DLD page often renders the correct next state slightly after a Playwright lookup times out.
     const inspected=await inspectSecondaryListingState().catch(()=>null);
     if(inspected?.status==='listing_value_ready'){
       return{status:'property_selected',permit:'150273',unitNo:payload?.deed?.unitNo,buildingName:payload?.deed?.buildingName,area:payload?.deed?.area,selectedResult:inspected.selectedResult||'',recovered:true};
     }
-
     if(!RECOVERABLE_LISTING_STATES.has(result?.status))return result;
     console.log(`Recoverable Trakheesi state ${result.status}; inspecting and retrying (${attempt}/6)`);
     if(attempt<6)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1400));
@@ -159,7 +155,20 @@ async function execute(task){
         try{advertisement=await normalizeDldFile(task.payload?.advertisementFormat,'advertisement');}catch(error){return{status:'file_normalization_failed',which:'advertisement_format',message:error.message};}
         marketingPath=await materialize(marketing,'marketing contract');
         advertPath=await materialize(advertisement,'advertisement format');
-        return await finalizeSecondaryListing({...task.payload,marketingContract:{path:marketingPath},advertisementFormat:{path:advertPath}});
+
+        const finalPayload={...task.payload,marketingContract:{path:marketingPath},advertisementFormat:{path:advertPath}};
+        let result;
+        for(let attempt=1;attempt<=3;attempt++){
+          result=await finalizeSecondaryListing(finalPayload);
+          if(result?.status!=='listing_saved')return result;
+          await new Promise(r=>setTimeout(r,900));
+          const inspected=await inspectSecondaryListingState().catch(()=>null);
+          if(inspected?.status!=='listing_value_ready')return result;
+          console.log(`DLD Save was not confirmed; listing modal is still open (${attempt}/3). Retrying Save.`);
+          if(attempt<3)await new Promise(r=>setTimeout(r,1200));
+        }
+        const inspected=await inspectSecondaryListingState().catch(()=>null);
+        return{status:'listing_save_not_confirmed',permit:'150273',url:inspected?.url||result?.url||'',reason:'save_button_clicked_but_listing_modal_remained_open'};
       }finally{
         if(marketingPath)await fs.rm(marketingPath,{force:true}).catch(()=>{});
         if(advertPath)await fs.rm(advertPath,{force:true}).catch(()=>{});
