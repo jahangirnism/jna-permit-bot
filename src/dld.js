@@ -45,7 +45,87 @@ async function waitForUaePassApproval(initial){if(initial?.status!=='uae_pass_ap
 async function submitUaePassId(){await switchToUaePass();const eid=process.env.UAE_PASS_EMIRATES_ID;if(!eid)return{status:'uae_pass_id_required',url:page.url()};const input=await firstVisible(page,['input[placeholder*="Emirates ID, email, or phone" i]','input[placeholder*="Emirates ID" i]','input[aria-label*="Emirates ID" i]','input[type="text"]','input[type="tel"]']);if(!input)return{status:'uae_pass_id_field_not_found',url:page.url()};await input.fill(eid);const btn=await firstVisible(page,['button:has-text("Login")','button:has-text("Sign in")','button[type="submit"]','input[type="submit"]']);if(!btn)return{status:'uae_pass_login_button_not_found',url:page.url()};await btn.click({noWaitAfter:true});await page.waitForTimeout(3500);const s=await detectState();return waitForUaePassApproval(s);}
 async function clickTrakheesi(){const t=page.getByText('Trakheesi',{exact:true}).first();if(!(await t.isVisible({timeout:5000}).catch(()=>false)))return{status:'trakheesi_not_found',url:page.url()};const card=t.locator('xpath=ancestor::*[.//*[contains(normalize-space(.),"Go to Account")] or .//*[contains(normalize-space(.),"Login with UAE Pass")]][1]');let btn=card.getByText(/Go to Account/i,{exact:true}).first();if(await btn.isVisible({timeout:1500}).catch(()=>false)){const popup=context.waitForEvent('page',{timeout:4000}).catch(()=>null);await btn.click({force:true,noWaitAfter:true});const p=await popup;if(p){page=p;page.setDefaultTimeout(10000);}await page.waitForTimeout(3500);await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae')){await saveSession();return{status:'session_active',url:page.url()};}return detectState();}btn=card.getByRole('button',{name:/login with uae pass/i}).first();if(!(await btn.isVisible().catch(()=>false)))btn=card.getByText(/login with uae pass/i).first();if(!(await btn.isVisible().catch(()=>false)))return{status:'trakheesi_account_button_not_found',url:page.url()};await btn.click({noWaitAfter:true});await page.waitForTimeout(1000);const m=await handleUaePassModal();return m||detectState();}
 async function ensureTrakheesiAccount(){await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};const text=await pageText(page);if(text.includes('dld application dashboard')&&text.includes('trakheesi')){const entered=await clickTrakheesi();await page.waitForTimeout(1500);await selectBestPage();if(page.url().includes('trakheesi.dubailand.gov.ae'))return{status:'session_active',url:page.url()};return entered;}return{status:'trakheesi_session_required',url:page.url()};}
-async function openSecondaryPermitEdit(){await ensureSession();const entered=await ensureTrakheesiAccount();if(!page.url().includes('trakheesi.dubailand.gov.ae'))return entered?.status==='session_active'?{status:'trakheesi_session_required',url:page.url()}:entered;await selectBestPage();let tx=await currentTransactionNumber();if(tx===SECONDARY_PERMIT&&await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};const permitNav=page.getByText('Permit',{exact:true}).first();if(await permitNav.isVisible({timeout:5000}).catch(()=>false))await permitNav.click({force:true});await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:12000}).catch(()=>{});const result=await page.evaluate(permit=>{const norm=s=>(s||'').replace(/\s+/g,' ').trim();const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');const editLinks=[...document.querySelectorAll('a[title="Edit Permit"][id*="UserPermitDashBoardGrid_EditLinkButton"]')];const candidates=[];for(const link of editLinks){let node=link;for(let depth=0;depth<12&&node;depth++,node=node.parentElement){const text=norm(node.innerText||node.textContent);if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){candidates.push({link,node,depth,textLength:text.length});break;}}}candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);const chosen=candidates[0];if(!chosen)return{clicked:false,reason:'no_edit_link_bound_to_permit'};const text=norm(chosen.node.innerText||chosen.node.textContent);if(!permitRe.test(text))return{clicked:false,reason:'permit_verification_failed'};chosen.link.click();return{clicked:true};},SECONDARY_PERMIT).catch(error=>({clicked:false,reason:error.message}));if(!result?.clicked){await page.waitForTimeout(500);if(await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};const edits=page.getByText(/^Edit$/i,{exact:true}),visible=[];for(let i=0;i<await edits.count().catch(()=>0);i++)if(await edits.nth(i).isVisible().catch(()=>false))visible.push(edits.nth(i));if(visible.length!==1)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:result?.reason||'visible_edit_not_unique'};await visible[0].click({force:true});}for(let attempt=1;attempt<=4;attempt++){await page.waitForTimeout(attempt===1?1800:700);await selectBestPage();tx=await currentTransactionNumber();if(tx===SECONDARY_PERMIT&&await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:attempt>1};if(tx&&tx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:tx,url:page.url()};}if(await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};return{status:'permit_page_unconfirmed',permit:SECONDARY_PERMIT,actualTransaction:tx,url:page.url()};}
+
+async function clickSecondaryPermitEditFromList(){
+  for(let attempt=1;attempt<=4;attempt++){
+    if(await isSecondaryPermitWorkspace())return{clicked:true,recovered:true};
+    const permitNav=page.getByText('Permit',{exact:true}).first();
+    if(await permitNav.isVisible({timeout:3000}).catch(()=>false)){
+      await permitNav.click({force:true}).catch(()=>{});
+      await page.waitForTimeout(attempt===1?1100:700);
+    }
+    await page.waitForFunction(permit=>document.body?.innerText?.includes(permit),SECONDARY_PERMIT,{timeout:7000}).catch(()=>{});
+
+    const direct=await page.evaluate(permit=>{
+      const norm=s=>(s||'').replace(/\s+/g,' ').trim();
+      const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');
+      const all=[...document.querySelectorAll('a[title="Edit Permit"],a[id*="UserPermitDashBoardGrid_EditLinkButton"],input[title="Edit Permit"],button[title="Edit Permit"]')];
+      const candidates=[];
+      for(const el of all){
+        let node=el;
+        for(let depth=0;depth<14&&node;depth++,node=node.parentElement){
+          const text=norm(node.innerText||node.textContent);
+          if(permitRe.test(text)&&/Electronic Advertisement/i.test(text)){candidates.push({el,depth,textLength:text.length});break;}
+        }
+      }
+      candidates.sort((a,b)=>a.depth-b.depth||a.textLength-b.textLength);
+      if(!candidates[0])return{clicked:false};
+      candidates[0].el.click();return{clicked:true};
+    },SECONDARY_PERMIT).catch(()=>({clicked:false}));
+    if(direct.clicked)return direct;
+
+    const menuOpened=await page.evaluate(permit=>{
+      const norm=s=>(s||'').replace(/\s+/g,' ').trim();
+      const permitRe=new RegExp(`Permit\\s*Number\\s*${permit}(?:\\s|$)`,'i');
+      const nodes=[...document.querySelectorAll('div,li,tr,section,article')].filter(node=>{
+        const text=norm(node.innerText||node.textContent);
+        return permitRe.test(text)&&/Electronic Advertisement/i.test(text);
+      }).sort((a,b)=>norm(a.innerText||a.textContent).length-norm(b.innerText||b.textContent).length);
+      const card=nodes[0];if(!card)return false;
+      const controls=[...card.querySelectorAll('button,a,input,[role="button"],[onclick]')];
+      const menu=controls.find(el=>{
+        const text=norm((el.innerText||el.textContent||'')+' '+(el.getAttribute('title')||'')+' '+(el.getAttribute('aria-label')||''));
+        return text==='...'||/more|action|menu|option/i.test(text)||el.querySelector?.('.fa-ellipsis-h,.fa-ellipsis-v,.fa-ellipsis');
+      })||controls.find(el=>/\.\.\./.test(norm(el.innerText||el.textContent||'')));
+      if(!menu)return false;menu.click();return true;
+    },SECONDARY_PERMIT).catch(()=>false);
+
+    if(menuOpened){
+      await page.waitForTimeout(450);
+      const edits=page.getByText(/^Edit$/i,{exact:true});
+      const visible=[];
+      for(let i=0;i<await edits.count().catch(()=>0);i++)if(await edits.nth(i).isVisible().catch(()=>false))visible.push(edits.nth(i));
+      if(visible.length===1){await visible[0].click({force:true});return{clicked:true,recovered:true};}
+    }
+
+    if(attempt<4)await page.waitForTimeout(900);
+  }
+  return{clicked:false};
+}
+
+async function openSecondaryPermitEdit(){
+  await ensureSession();
+  const entered=await ensureTrakheesiAccount();
+  if(!page.url().includes('trakheesi.dubailand.gov.ae'))return entered?.status==='session_active'?{status:'trakheesi_session_required',url:page.url()}:entered;
+  await selectBestPage();
+  let tx=await currentTransactionNumber();
+  if(tx===SECONDARY_PERMIT&&await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};
+
+  const clicked=await clickSecondaryPermitEditFromList();
+  if(!clicked.clicked)return{status:'permit_edit_not_found',permit:SECONDARY_PERMIT,url:page.url(),reason:'self_heal_exhausted'};
+
+  for(let attempt=1;attempt<=5;attempt++){
+    await page.waitForTimeout(attempt===1?1600:650);
+    await selectBestPage();
+    tx=await currentTransactionNumber();
+    if(tx===SECONDARY_PERMIT&&await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};
+    if(tx&&tx!==SECONDARY_PERMIT)return{status:'wrong_permit_edit_page',permit:SECONDARY_PERMIT,actualTransaction:tx,url:page.url()};
+  }
+
+  if(await isSecondaryPermitWorkspace())return{status:'secondary_permit_edit_open',permit:SECONDARY_PERMIT,url:page.url(),recovered:true};
+  return{status:'permit_page_unconfirmed',permit:SECONDARY_PERMIT,actualTransaction:tx,url:page.url()};
+}
+
 async function ensureListingTypeAndPurpose(purpose){const purposeSelector=purpose==='RENT'?RENT_PURPOSE_RADIO:SALE_PURPOSE_RADIO;for(let attempt=1;attempt<=3;attempt++){let propertyRadio=page.locator(LISTING_PROPERTY_RADIO).first();if(!(await propertyRadio.isVisible({timeout:900}).catch(()=>false))){const add=page.locator(ADD_PROPERTY_BUTTON).first();if(!(await add.isVisible({timeout:3500}).catch(()=>false)))return{status:'add_property_button_not_found',url:page.url()};await add.click({force:true});await page.waitForTimeout(900);propertyRadio=page.locator(LISTING_PROPERTY_RADIO).first();}if(!(await propertyRadio.isVisible({timeout:2500}).catch(()=>false)))return{status:'listing_type_property_not_found',url:page.url()};if(!(await propertyRadio.isChecked().catch(()=>false))){await propertyRadio.check({force:true}).catch(async()=>{await propertyRadio.click({force:true}).catch(()=>{});});await page.waitForTimeout(700);}const purposeRadio=page.locator(purposeSelector).first();if(!(await purposeRadio.isVisible({timeout:4500}).catch(()=>false))){if(attempt<3){await page.waitForTimeout(900);continue;}return{status:'listing_purpose_not_found',url:page.url()};}if(!(await purposeRadio.isChecked().catch(()=>false))){await purposeRadio.check({force:true}).catch(async()=>{await purposeRadio.click({force:true}).catch(()=>{});});await page.waitForTimeout(600);}const proceed=page.locator(LISTING_PROCEED_BUTTON).first();if(await proceed.isVisible({timeout:4500}).catch(()=>false))return{status:'listing_ready_to_proceed',proceed};if(attempt<3)await page.waitForTimeout(900);}return{status:'listing_proceed_not_found',url:page.url()};}
 async function activateUnitTab(){for(let attempt=1;attempt<=4;attempt++){const area=page.locator(UNIT_AREA_INPUT).first();if(await area.isVisible({timeout:500}).catch(()=>false))return true;let label=page.locator(UNIT_TAB_LABEL).first();if(!(await label.count().catch(()=>0)))label=page.getByText(/^Unit$/i,{exact:true}).first();if(await label.count().catch(()=>0)){await label.evaluate(el=>{let target=el;for(let i=0;i<5&&target;i++,target=target.parentElement){if(target.matches?.('a,[onclick],[role="tab"],li')){target.click();return;}}el.click();}).catch(async()=>{await label.click({force:true}).catch(()=>{});});await page.waitForTimeout(900);if(await area.isVisible({timeout:1800}).catch(()=>false))return true;}if(attempt<4)await page.waitForTimeout(900);}return false;}
 
