@@ -2,6 +2,13 @@ import { createPixxiListing } from './pixxi.js';
 
 function clean(value){return String(value??'').trim();}
 function number(value){const n=Number(String(value??'').replace(/,/g,''));return Number.isFinite(n)?n:0;}
+function truncateText(value,max){
+  const text=clean(value);
+  if(text.length<=max)return text;
+  const clipped=text.slice(0,max).trimEnd();
+  const lastSpace=clipped.lastIndexOf(' ');
+  return(lastSpace>Math.floor(max*.75)?clipped.slice(0,lastSpace):clipped).trimEnd();
+}
 
 export function normalizeHouseType(value){
   const v=clean(value).toUpperCase().replace(/[\s-]+/g,'_');
@@ -45,9 +52,11 @@ export function pixxiListingPayload(state={}){
   const propertyType=/sale|sell/i.test(clean(state.listingType))?'SELL':'RENT';
   const houseType=normalizeHouseType(state.crmHouseType);
   const completionStatus=propertyType==='RENT'?'COMPLETED':normalizeCompletion(state.completionStatus);
+  // Claude is intentionally unrestricted. Only the values sent to Pixxi are
+  // capped to the lengths used by the previously working CRM flow.
   const payload={
-    name:state.generated.title,
-    description:state.generated.description,
+    name:truncateText(state.generated.title,50),
+    description:truncateText(state.generated.description,1500),
     propertyType,
     houseType:[houseType],
     bedRoomNum:bedroomNumber(state.bedrooms),
