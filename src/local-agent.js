@@ -75,9 +75,6 @@ async function prepareListingWithRetry(payload){let result;for(let attempt=1;att
 async function resumeWorkflowState(){
   const listing=await inspectSecondaryListingState();
   if(listing?.status==='listing_value_ready')return listing;
-  // If we are not yet on the final listing screen, inspect the wider DLD/UAE PASS
-  // browser state instead of failing. testDldLogin() is state-aware and reuses the
-  // existing Chrome session; it does not restart the permit workflow.
   const general=await testDldLogin();
   if(general?.status)return general;
   return listing;
@@ -89,6 +86,7 @@ async function execute(task){
     case 'continue':return continueAfterCaptcha();
     case 'uae_pass':return continueUaePassLogin();
     case 'check_uae_pass':return checkUaePassStatus();
+    case 'check_ua_pass':return checkUaePassStatus();
     case 'prepare_listing':return prepareListingWithRetry(task.payload||{});
     case 'resume_listing':return resumeWorkflowState();
     case 'finalize_listing':{
