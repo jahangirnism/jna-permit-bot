@@ -69,20 +69,46 @@ async function materialize(file,label){
   return target;
 }
 
-const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found']);
-async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=3;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/3)`);if(attempt<3)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));}return result;}
+const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found','unit_tab_not_found','unit_tab_not_ready']);
+async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=4;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/4)`);if(attempt<4)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));}return result;}
 
+const SELF_HEAL_STATES=new Set(['login_form_not_found','post_login_unknown','trakheesi_not_found','trakheesi_session_required','continue_error']);
 async function resumeWorkflowState(){
-  const listing=await inspectSecondaryListingState();
+  let listing=await inspectSecondaryListingState();
   if(listing?.status==='listing_value_ready')return listing;
-  const general=await testDldLogin();
-  if(general?.status)return general;
-  return listing;
+
+  let last=listing;
+  for(let attempt=1;attempt<=4;attempt++){
+    let general=await testDldLogin();
+    last=general||last;
+
+    // Known stable states: hand them back to Telegram immediately.
+    if(['session_active','real_estate_admin_profile_selected','login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout'].includes(general?.status))return general;
+
+    // If DLD says the login form is "not found", do not assume failure. This commonly
+    // means the user is already authenticated and the SPA/dashboard has not been interpreted yet.
+    // Re-inspect the current page and let the existing safe continuation logic find
+    // DLD Dashboard -> Trakheesi -> Go to Account -> current Trakheesi state.
+    if(SELF_HEAL_STATES.has(general?.status)){
+      await new Promise(r=>setTimeout(r,1200));
+      const continued=await continueAfterCaptcha();
+      last=continued||last;
+      if(['session_active','real_estate_admin_profile_selected','login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout'].includes(continued?.status))return continued;
+    }
+
+    listing=await inspectSecondaryListingState();
+    if(listing?.status==='listing_value_ready')return listing;
+
+    if(attempt<4)await new Promise(r=>setTimeout(r,1500));
+  }
+  return last||listing||{status:'post_login_unknown'};
 }
 
 async function execute(task){
   switch(task.type){
-    case 'test_login':return testDldLogin();
+    // /testlogin is now state-aware too. It no longer assumes that seeing the login URL
+    // means the user is logged out; it inspects/retries and follows the safe next step.
+    case 'test_login':return resumeWorkflowState();
     case 'continue':return continueAfterCaptcha();
     case 'uae_pass':return continueUaePassLogin();
     case 'check_uae_pass':return checkUaePassStatus();
