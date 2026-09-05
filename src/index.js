@@ -5,6 +5,7 @@ import { extractTitleDeedFromFile } from './titleDeed.js';
 import { startAgentRelay, runBrowserTask } from './agentRelay.js';
 import { findPixxiAgentByMobile, getPixxiCurrentUser, pixxiAgentSummary } from './pixxi.js';
 import { generateListingCopy } from './listing-ai.js';
+import { initRuntimeState, loadListingAiStates, saveListingAiState, deleteListingAiState, waitForTelegramLease, closeRuntimeState } from './runtime-state.js';
 
 const token=process.env.TELEGRAM_BOT_TOKEN;
 if(!token){console.error('Missing TELEGRAM_BOT_TOKEN environment variable');process.exit(1);}
@@ -218,13 +219,16 @@ async function handleListingAiInput(chatId,raw,state){
   }
   if(state.step==='notes'){
     state.notes=value==='-'?'':value;state.step='generating';
+    await saveListingAiState(chatId,state);
     await sendMessage(chatId,'Researching the building and generating the listing title + description with the existing Claude workflow…');
     try{
       const result=await generateListingCopy(state);
       state.step='generated';state.generated=result;
+      await saveListingAiState(chatId,state);
       await sendMessage(chatId,`AI LISTING DRAFT\n\nTITLE (${result.titleChars} chars)\n${result.title}\n\nDESCRIPTION (${result.descriptionChars} chars)\n${result.description}\n\nRead-only AI test complete. No Pixxi listing was created or changed.`);
     }catch(error){
       state.step='notes';
+      await saveListingAiState(chatId,state);
       await sendMessage(chatId,`Listing AI failed: ${error.message}`);
     }
     return true;
@@ -285,7 +289,7 @@ async function handleUpdate(update){
     return;
   }
   if(command==='/testlistingai'){
-    listingAiState.set(chatId,{step:'building'});
+    const aiState={step:'building'};listingAiState.set(chatId,aiState);await saveListingAiState(chatId,aiState);
     await sendMessage(chatId,'Claude Listing AI Test\n\nThis uses the title/description workflow ported from the existing listing repo and will NOT create anything in Pixxi.\n\nFirst, send the Building / Project name.');
     return;
   }
@@ -298,7 +302,7 @@ async function handleUpdate(update){
     return;
   }
   if(command==='/cancel'){
-    cancelAutoResumeWatch(chatId);permitState.delete(chatId);listingAiState.delete(chatId);
+    cancelAutoResumeWatch(chatId);permitState.delete(chatId);listingAiState.delete(chatId);await deleteListingAiState(chatId);
     await sendMessage(chatId,'Current workflow cancelled. The DLD browser page and Pixxi CRM were not changed.');return;
   }
   if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. Manual OTP/CAPTCHA/UAE PASS steps are detected automatically after you complete them. /resumelisting can inspect the current browser state at any point.');return;}
@@ -326,7 +330,8 @@ async function handleUpdate(update){
 
   const aiState=listingAiState.get(chatId);
   if(aiState&&!raw.startsWith('/')){
-    if(await handleListingAiInput(chatId,raw,aiState))return;
+    const handled=await handleListingAiInput(chatId,raw,aiState);
+    if(handled){await saveListingAiState(chatId,aiState);return;}
   }
 
   if(state?.step==='purpose'&&/^(rent|sale)$/i.test(raw)){
@@ -347,6 +352,33 @@ async function handleUpdate(update){
   }
 }
 
-async function startup(){const me=await telegram('getMe');console.log(`Connected to Telegram as @${me.username} (${me.id})`);await telegram('deleteWebhook',{drop_pending_updates:false});console.log('Telegram webhook cleared; starting long polling');}
-async function poll(){startAgentRelay();await startup();console.log('JnA Permit Bot is running in local-agent mode');while(true){try{const updates=await telegram('getUpdates',{offset,timeout:25,allowed_updates:['message']});for(const update of updates){offset=update.update_id+1;try{await handleUpdate(update);}catch(err){console.error('Update handling error:',err);try{if(update.message?.chat?.id)await sendMessage(update.message.chat.id,`Bot error: ${err.message}`);}catch{}}}}catch(err){console.error('Polling error:',err);await new Promise(resolve=>setTimeout(resolve,3000));}}}
-poll().catch(err=>{console.error('Fatal bot error:',err);process.exit(1);});
+async function startup(){const me=await telegram('getMe');console.log(`Connected to Telegram as @${me.username} (${me.id})`);await telegram('deleteWebhook',{drop_pending_updates:false});console.log('Telegram webhook cleared');}
+async function poll(){
+  startAgentRelay();
+  await initRuntimeState();
+  const restored=await loadListingAiStates();for(const [chatId,state] of restored)listingAiState.set(chatId,state);
+  if(restored.size)console.log(`Restored ${restored.size} listing AI state(s)`);
+  await startup();
+  await waitForTelegramLease();
+  console.log('JnA Permit Bot is running in local-agent mode; Telegram long polling active');
+  while(true){
+    try{
+      const updates=await telegram('getUpdates',{offset,timeout:25,allowed_updates:['message']});
+      for(const update of updates){offset=update.update_id+1;try{await handleUpdate(update);}catch(err){console.error('Update handling error:',err);try{if(update.message?.chat?.id)await sendMessage(update.message.chat.id,`Bot error: ${err.message}`);}catch{}}}
+    }catch(err){
+      console.error('Polling error:',err);
+      const conflict=/getUpdates failed \(409\)/.test(err.message||'');
+      await new Promise(resolve=>setTimeout(resolve,conflict?15000:3000));
+    }
+  }
+}
+
+let shuttingDown=false;
+async function shutdown(signal){
+  if(shuttingDown)return;shuttingDown=true;console.log(`${signal} received; releasing Telegram lease...`);
+  await closeRuntimeState().catch(()=>{});process.exit(0);
+}
+process.on('SIGTERM',()=>void shutdown('SIGTERM'));
+process.on('SIGINT',()=>void shutdown('SIGINT'));
+
+poll().catch(async err=>{console.error('Fatal bot error:',err);await closeRuntimeState().catch(()=>{});process.exit(1);});
