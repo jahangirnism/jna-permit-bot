@@ -10,6 +10,8 @@ const apiBase=`https://api.telegram.org/bot${token}`;
 let offset=0;
 let loginTestRunning=false;
 const permitState=new Map();
+const autoResumeWatchers=new Map();
+const MANUAL_BROWSER_STATES=new Set(['login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout','post_login_unknown']);
 
 async function telegram(method,body={}){
   const response=await fetch(`${apiBase}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -25,13 +27,14 @@ function resultMessage(result){
     case 'agent_offline':return 'The office browser agent is offline. Start it on the office computer, keep Chrome available, then try again.';
     case 'agent_error':return `Office browser agent error: ${result.message||'unknown error'}`;
     case 'missing_credentials':return 'The office browser agent is missing DLD_USERNAME or DLD_PASSWORD in its local environment.';
-    case 'captcha_required':return 'CAPTCHA is showing in the office Chrome window. Complete it manually there, then return to Telegram and send /continue.';
-    case 'authentication_code':return 'DLD reached an authentication-code screen in the office Chrome window.';
-    case 'uae_pass':return 'UAE PASS is open in the office Chrome window. Send /uaepass to continue.';
+    case 'login_form':return 'DLD login/verification is open in the office Chrome window. Complete the required manual step there; I will keep checking and continue automatically.';
+    case 'captcha_required':return 'CAPTCHA is showing in the office Chrome window. Complete it manually there; I will keep checking and continue automatically.';
+    case 'authentication_code':return 'DLD reached an authentication-code screen. Enter the code manually in the office Chrome window; I will keep checking and continue automatically.';
+    case 'uae_pass':return 'UAE PASS is open in the office Chrome window. Complete the required manual step; I will keep checking and continue automatically.';
     case 'uae_pass_id_required':return 'The office browser agent is missing UAE_PASS_EMIRATES_ID in its local environment.';
     case 'uae_pass_id_field_not_found':return 'UAE PASS opened, but the Emirates ID field was not detected in the office Chrome window.';
     case 'uae_pass_login_button_not_found':return 'The Emirates ID was filled, but the UAE PASS Login button was not detected.';
-    case 'uae_pass_approval_required':return `UAE PASS APPROVAL REQUIRED\n\nSelect number ${result.challenge} in your UAE PASS app.\n\nAfter approving, send /checkuaepass.`;
+    case 'uae_pass_approval_required':return `UAE PASS APPROVAL REQUIRED\n\nSelect number ${result.challenge} in your UAE PASS app.\n\nI will keep checking automatically after approval.`;
     case 'real_estate_admin_profile_selected':return 'REAL ESTATE OFFICE ADMIN profile selected successfully. The local Chrome session will be reused.';
     case 'session_active':return 'DLD/Trakheesi session is active on the office computer.';
     case 'real_estate_admin_profile_not_found':return 'Multiple DLD profiles were found, but REAL ESTATE OFFICE ADMIN was not detected.';
@@ -40,7 +43,7 @@ function resultMessage(result){
     case 'trakheesi_uae_pass_button_not_found':return 'Trakheesi was detected, but its “Login with UAE Pass” button was not found.';
     case 'no_active_session':return 'There is no active local DLD browser session. Send /testlogin first.';
     case 'login_form_not_found':return `DLD opened, but the login form was not detected. Page: ${result.url||'unknown'}`;
-    case 'post_login_unknown':return `DLD moved to a new screen that still needs mapping. Page: ${result.url||'unknown'}`;
+    case 'post_login_unknown':return `DLD moved to a new screen that still needs mapping. I will keep checking for the next known state. Page: ${result.url||'unknown'}`;
     case 'secondary_permit_not_found':return 'Secondary permit 150273 was not found. I stopped without changing anything.';
     case 'permit_menu_not_found':return 'Permit 150273 was found, but its action menu was not detected. I stopped without changing anything.';
     case 'permit_edit_not_found':return 'Permit 150273 menu opened, but Edit was not detected. I stopped.';
@@ -61,18 +64,6 @@ function resultMessage(result){
     case 'finalize_listing_error':return `Could not save the listing: ${result.message}`;
     default:return `DLD browser status: ${result.message||result.status||'unknown error'}`;
   }
-}
-
-async function runLoginTest(chatId,state){
-  if(loginTestRunning){await sendMessage(chatId,'A DLD login check is already running.');return;}
-  loginTestRunning=true;
-  try{
-    await sendMessage(chatId,'Checking the DLD session on the office computer…');
-    const result=await runBrowserTask('test_login',{},70000);
-    console.log('Local DLD test status:',result.status,result.url||'');
-    await sendMessage(chatId,resultMessage(result));
-    await maybePrepareListing(chatId,state,result);
-  }finally{loginTestRunning=false;}
 }
 
 async function downloadTelegramFile(fileId,originalName='title-deed.pdf'){
@@ -126,6 +117,56 @@ async function prepareListing(chatId,state){
 }
 async function maybePrepareListing(chatId,state,result){if(state?.step==='ready_for_dld'&&['session_active','real_estate_admin_profile_selected'].includes(result.status))await prepareListing(chatId,state);}
 
+function cancelAutoResumeWatch(chatId){autoResumeWatchers.delete(chatId);}
+async function applyRecoveredBrowserState(chatId,fallbackState,result){
+  let state=permitState.get(chatId)||fallbackState;
+  if(result.status==='listing_value_ready'){
+    if(!state)state={};
+    state.step='value';state.resumed=true;permitState.set(chatId,state);
+    await sendMessage(chatId,'Manual browser step completed. I detected the current listing screen automatically.\n\nPlease enter the property VALUE in AED.\nExample: 50000');
+    return true;
+  }
+  if(['session_active','real_estate_admin_profile_selected'].includes(result.status)&&state?.step==='ready_for_dld'){
+    await sendMessage(chatId,'Manual DLD verification completed. Continuing the permit workflow automatically…');
+    await prepareListing(chatId,state);
+    return true;
+  }
+  return false;
+}
+function startAutoResumeWatch(chatId,state){
+  if(autoResumeWatchers.has(chatId))return;
+  const marker=Symbol('auto-resume');
+  autoResumeWatchers.set(chatId,marker);
+  void (async()=>{
+    const deadline=Date.now()+5*60*1000;
+    try{
+      while(Date.now()<deadline&&autoResumeWatchers.get(chatId)===marker){
+        await new Promise(r=>setTimeout(r,5000));
+        if(autoResumeWatchers.get(chatId)!==marker)return;
+        const current=permitState.get(chatId)||state;
+        const result=await runBrowserTask('resume_listing',{},45000).catch(error=>({status:'agent_error',message:error.message}));
+        if(MANUAL_BROWSER_STATES.has(result.status))continue;
+        if(await applyRecoveredBrowserState(chatId,current,result))return;
+        if(['agent_offline','agent_not_configured','no_active_session'].includes(result.status))return;
+      }
+    }catch(error){console.error('Auto-resume watcher error:',error.message);}
+    finally{if(autoResumeWatchers.get(chatId)===marker)autoResumeWatchers.delete(chatId);}
+  })();
+}
+
+async function runLoginTest(chatId,state){
+  if(loginTestRunning){await sendMessage(chatId,'A DLD login check is already running.');return;}
+  loginTestRunning=true;
+  try{
+    await sendMessage(chatId,'Checking the DLD session on the office computer…');
+    const result=await runBrowserTask('test_login',{},70000);
+    console.log('Local DLD test status:',result.status,result.url||'');
+    await sendMessage(chatId,resultMessage(result));
+    await maybePrepareListing(chatId,state,result);
+    if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
+  }finally{loginTestRunning=false;}
+}
+
 async function finalizeListing(chatId,state){
   state.step='saving';await sendMessage(chatId,'Preparing the files, uploading them to Trakheesi, and saving the property…');
   const result=await runBrowserTask('finalize_listing',{value:state.value,marketingContract:state.marketingContract,advertisementFormat:state.advertisementFormat},90000);
@@ -163,23 +204,36 @@ async function handleUpdate(update){
   console.log(`Received ${command} from chat ${chatId}`);
 
   if(command==='/resumelisting'){
-    await sendMessage(chatId,'Checking the current Trakheesi page on the office computer…');
-    const result=await runBrowserTask('resume_listing',{},40000);
+    await sendMessage(chatId,'Checking the current DLD/Trakheesi browser state on the office computer…');
+    const result=await runBrowserTask('resume_listing',{},50000);
     await sendMessage(chatId,resultMessage(result));
-    if(result.status==='listing_value_ready'){
-      state={step:'value',resumed:true};permitState.set(chatId,state);
-      await sendMessage(chatId,'Please enter the property VALUE in AED.\nExample: 50000');
-    }
+    if(await applyRecoveredBrowserState(chatId,state,result)){cancelAutoResumeWatch(chatId);return;}
+    if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
     return;
   }
-  if(command==='/cancel'){permitState.delete(chatId);await sendMessage(chatId,'Current permit workflow cancelled. The DLD browser page was not changed.');return;}
-  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. If Trakheesi is already at the Value/documents screen, use /resumelisting.');return;}
-  if(command==='/newpermit'){state={step:'title_deed'};permitState.set(chatId,state);await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
+  if(command==='/cancel'){cancelAutoResumeWatch(chatId);permitState.delete(chatId);await sendMessage(chatId,'Current permit workflow cancelled. The DLD browser page was not changed.');return;}
+  if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. Manual OTP/CAPTCHA/UAE PASS steps are detected automatically after you complete them. /resumelisting can inspect the current browser state at any point.');return;}
+  if(command==='/newpermit'){cancelAutoResumeWatch(chatId);state={step:'title_deed'};permitState.set(chatId,state);await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
   if(command==='/testlogin'){await runLoginTest(chatId,state);return;}
   if(command==='/preparelisting'){if(!state||state.step!=='ready_for_dld'){await sendMessage(chatId,'No permit is ready for DLD. Start with /newpermit first.');return;}await prepareListing(chatId,state);return;}
-  if(command==='/continue'){await sendMessage(chatId,'Continuing the DLD session on the office computer…');const result=await runBrowserTask('continue',{},50000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
-  if(command==='/uaepass'){await sendMessage(chatId,'Continuing UAE PASS in the office Chrome session…');const result=await runBrowserTask('uae_pass',{},50000);await sendMessage(chatId,resultMessage(result));return;}
-  if(command==='/checkuaepass'){const result=await runBrowserTask('check_uae_pass',{},40000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);return;}
+  if(command==='/continue'){
+    await sendMessage(chatId,'Continuing the DLD session on the office computer…');
+    const result=await runBrowserTask('continue',{},50000);await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);
+    if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
+    return;
+  }
+  if(command==='/uaepass'){
+    await sendMessage(chatId,'Continuing UAE PASS in the office Chrome session…');
+    const result=await runBrowserTask('uae_pass',{},50000);await sendMessage(chatId,resultMessage(result));
+    if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
+    return;
+  }
+  if(command==='/checkuaepass'){
+    const result=await runBrowserTask('check_ua_pass',{},40000).catch(async()=>runBrowserTask('check_uae_pass',{},40000));
+    await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);
+    if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
+    return;
+  }
 
   if(state?.step==='purpose'&&/^(rent|sale)$/i.test(raw)){
     state.purpose=raw.toUpperCase();state.step='property_type';
