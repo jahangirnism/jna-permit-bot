@@ -72,6 +72,17 @@ async function materialize(file,label){
 const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found']);
 async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=3;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/3)`);if(attempt<3)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));}return result;}
 
+async function resumeWorkflowState(){
+  const listing=await inspectSecondaryListingState();
+  if(listing?.status==='listing_value_ready')return listing;
+  // If we are not yet on the final listing screen, inspect the wider DLD/UAE PASS
+  // browser state instead of failing. testDldLogin() is state-aware and reuses the
+  // existing Chrome session; it does not restart the permit workflow.
+  const general=await testDldLogin();
+  if(general?.status)return general;
+  return listing;
+}
+
 async function execute(task){
   switch(task.type){
     case 'test_login':return testDldLogin();
@@ -79,7 +90,7 @@ async function execute(task){
     case 'uae_pass':return continueUaePassLogin();
     case 'check_uae_pass':return checkUaePassStatus();
     case 'prepare_listing':return prepareListingWithRetry(task.payload||{});
-    case 'resume_listing':return inspectSecondaryListingState();
+    case 'resume_listing':return resumeWorkflowState();
     case 'finalize_listing':{
       let marketingPath,advertPath;
       try{
