@@ -32,6 +32,14 @@ export function bedroomNumber(value){
   const m=v.match(/\d+/);return m?Number(m[0]):0;
 }
 
+export function formatJnAListingReference(rawReference,listingType){
+  const raw=clean(rawReference);
+  const suffix=raw.match(/(\d{3,})\s*$/)?.[1]||'';
+  if(!suffix)return raw;
+  const code=/sale|sell/i.test(clean(listingType))?'S':'R';
+  return `JnA_${code}_${suffix}`;
+}
+
 export function pixxiListingPayload(state={}){
   if(!state.generated?.title||!state.generated?.description)throw new Error('AI listing draft is missing');
   const propertyType=/sale|sell/i.test(clean(state.listingType))?'SELL':'RENT';
@@ -59,7 +67,9 @@ export function pixxiListingPayload(state={}){
 export async function createListingFromDraft(state={}){
   const payload=pixxiListingPayload(state);
   const result=await createPixxiListing(payload);
-  return{...result,payload};
+  const pixxiListingRef=result.listingRef;
+  const listingRef=formatJnAListingReference(pixxiListingRef,state.listingType);
+  return{...result,pixxiListingRef,listingRef,payload};
 }
 
 function dubaiTodayParts(){
