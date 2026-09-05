@@ -12,6 +12,22 @@ function replaceExact(from,to,label){
   source=source.replace(from,to);
 }
 
+// Private bot: only these Telegram user IDs may interact with the bot.
+// IDs are used instead of usernames because Telegram usernames can change.
+replaceExact(
+  "async function handleUpdate(update){",
+  `const ALLOWED_TELEGRAM_USER_IDS=new Set(['8824174298','1124582593']);
+function telegramUserId(update){return String(update?.message?.from?.id??update?.callback_query?.from?.id??update?.edited_message?.from?.id??'');}
+async function handleUpdate(update){
+  const senderId=telegramUserId(update);
+  if(!senderId||!ALLOWED_TELEGRAM_USER_IDS.has(senderId)){
+    const deniedChatId=update?.message?.chat?.id??update?.callback_query?.message?.chat?.id??update?.edited_message?.chat?.id;
+    if(deniedChatId)await sendMessage(deniedChatId,'Access denied. This is a private JnA House bot.').catch(()=>{});
+    return;
+  }`,
+  'approved Telegram users'
+);
+
 replaceExact(
   "if(!state.crmHouseType){state.step='crm_house_type';return sendMessage(chatId,'Property type? APARTMENT, VILLA, TOWNHOUSE, OFFICE, or LAND');}",
   "if(!state.crmHouseType){state.step='crm_house_type';return sendMessage(chatId,'Select property type:',replyChoices(['APARTMENT','VILLA','TOWNHOUSE','OFFICE','LAND']));}",
