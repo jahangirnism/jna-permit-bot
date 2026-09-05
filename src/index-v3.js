@@ -20,7 +20,8 @@ replaceExact(
 
 replaceExact(
   "if(state.bedrooms===undefined||state.bedrooms===null||state.bedrooms===''){state.step='bedrooms';return sendMessage(chatId,'Bedrooms? Example: Studio, 1 BR, 2 BR');}",
-  "if(state.bedrooms===undefined||state.bedrooms===null||state.bedrooms===''){state.step='bedrooms';return sendMessage(chatId,'Bedrooms? Enter a number only.\\n0 = Studio, 1 = 1 BR, 2 = 2 BR, etc.');}\\n  if(state.bathrooms===undefined||state.bathrooms===null||state.bathrooms===''){state.step='bathrooms';return sendMessage(chatId,'Bathrooms? Enter a number only.\\nExample: 1, 2, 3');}",
+  `if(state.bedrooms===undefined||state.bedrooms===null||state.bedrooms===''){state.step='bedrooms';return sendMessage(chatId,'Bedrooms? Enter a number only.\\n0 = Studio, 1 = 1 BR, 2 = 2 BR, etc.');}
+  if(state.bathrooms===undefined||state.bathrooms===null||state.bathrooms===''){state.step='bathrooms';return sendMessage(chatId,'Bathrooms? Enter a number only.\\nExample: 1, 2, 3');}`,
   'bedroom and bathroom prompts'
 );
 
@@ -32,7 +33,8 @@ replaceExact(
 
 replaceExact(
   "case'bedrooms':state.bedrooms=v;break;",
-  "case'bedrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bedrooms must be numeric. Use 0 for Studio, then 1, 2, 3, etc.');return true;}state.bedrooms=v;break;\\ncase'bathrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bathrooms must be numeric. Example: 1, 2, 3.');return true;}state.bathrooms=v;break;",
+  `case'bedrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bedrooms must be numeric. Use 0 for Studio, then 1, 2, 3, etc.');return true;}state.bedrooms=v;break;
+case'bathrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bathrooms must be numeric. Example: 1, 2, 3.');return true;}state.bathrooms=v;break;`,
   'numeric bedroom bathroom validation'
 );
 
