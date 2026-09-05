@@ -4,6 +4,7 @@ import path from 'node:path';
 import { extractTitleDeedFromFile } from './titleDeed.js';
 import { startAgentRelay, runBrowserTask } from './agentRelay.js';
 import { findPixxiAgentByMobile, getPixxiCurrentUser, pixxiAgentSummary } from './pixxi.js';
+import { generateListingCopy } from './listing-ai.js';
 
 const token=process.env.TELEGRAM_BOT_TOKEN;
 if(!token){console.error('Missing TELEGRAM_BOT_TOKEN environment variable');process.exit(1);}
@@ -11,6 +12,7 @@ const apiBase=`https://api.telegram.org/bot${token}`;
 let offset=0;
 let loginTestRunning=false;
 const permitState=new Map();
+const listingAiState=new Map();
 const autoResumeWatchers=new Map();
 const MANUAL_BROWSER_STATES=new Set(['login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout','post_login_unknown']);
 
@@ -187,6 +189,49 @@ async function finalizeListing(chatId,state){
   }else state.step='advertisement_format';
 }
 
+async function handleListingAiInput(chatId,raw,state){
+  const value=raw.trim();
+  if(state.step==='building'){
+    state.building=value;state.step='area';await sendMessage(chatId,'Area / community?\nExample: Business Bay');return true;
+  }
+  if(state.step==='area'){
+    state.area=value;state.step='bedrooms';await sendMessage(chatId,'Bedrooms?\nExample: 2 BR or Studio');return true;
+  }
+  if(state.step==='bedrooms'){
+    state.bedrooms=value;state.step='size';await sendMessage(chatId,'Size in sq ft?\nExample: 1192');return true;
+  }
+  if(state.step==='size'){
+    state.size=value;state.step='listing_type';await sendMessage(chatId,'Listing type? Send RENT or SALE');return true;
+  }
+  if(state.step==='listing_type'){
+    if(!/^(rent|sale)$/i.test(value)){await sendMessage(chatId,'Please send RENT or SALE.');return true;}
+    state.listingType=value.toUpperCase();state.step='price';await sendMessage(chatId,'Price in AED?\nExample: 1900000');return true;
+  }
+  if(state.step==='price'){
+    state.price=value.replace(/,/g,'');state.step='furnishing';await sendMessage(chatId,'Furnishing?\nExample: Furnished, Unfurnished, Semi Furnished');return true;
+  }
+  if(state.step==='furnishing'){
+    state.furnishing=value;state.step='view';await sendMessage(chatId,'View?\nExample: Lagoon View\nSend - if none.');return true;
+  }
+  if(state.step==='view'){
+    state.view=value==='-'?'':value;state.step='notes';await sendMessage(chatId,'Agent notes / special features?\nAdd anything important the AI should prioritise. Send - if none.');return true;
+  }
+  if(state.step==='notes'){
+    state.notes=value==='-'?'':value;state.step='generating';
+    await sendMessage(chatId,'Researching the building and generating the listing title + description with the existing Claude workflow…');
+    try{
+      const result=await generateListingCopy(state);
+      state.step='generated';state.generated=result;
+      await sendMessage(chatId,`AI LISTING DRAFT\n\nTITLE (${result.titleChars} chars)\n${result.title}\n\nDESCRIPTION (${result.descriptionChars} chars)\n${result.description}\n\nRead-only AI test complete. No Pixxi listing was created or changed.`);
+    }catch(error){
+      state.step='notes';
+      await sendMessage(chatId,`Listing AI failed: ${error.message}`);
+    }
+    return true;
+  }
+  return false;
+}
+
 async function handleUpdate(update){
   const message=update.message;if(!message)return;
   const chatId=message.chat.id;
@@ -239,6 +284,11 @@ async function handleUpdate(update){
     }
     return;
   }
+  if(command==='/testlistingai'){
+    listingAiState.set(chatId,{step:'building'});
+    await sendMessage(chatId,'Claude Listing AI Test\n\nThis uses the title/description workflow ported from the existing listing repo and will NOT create anything in Pixxi.\n\nFirst, send the Building / Project name.');
+    return;
+  }
   if(command==='/resumelisting'){
     await sendMessage(chatId,'Checking the current DLD/Trakheesi browser state on the office computer…');
     const result=await runBrowserTask('resume_listing',{workflow:workflowPayload(state)},90000);
@@ -247,7 +297,10 @@ async function handleUpdate(update){
     if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
     return;
   }
-  if(command==='/cancel'){cancelAutoResumeWatch(chatId);permitState.delete(chatId);await sendMessage(chatId,'Current permit workflow cancelled. The DLD browser page was not changed.');return;}
+  if(command==='/cancel'){
+    cancelAutoResumeWatch(chatId);permitState.delete(chatId);listingAiState.delete(chatId);
+    await sendMessage(chatId,'Current workflow cancelled. The DLD browser page and Pixxi CRM were not changed.');return;
+  }
   if(command==='/start'){await sendMessage(chatId,'Welcome to JnA Permit Bot.\n\nUse /newpermit to start a permit request. Manual OTP/CAPTCHA/UAE PASS steps are detected automatically after you complete them. /resumelisting can inspect the current browser state at any point.');return;}
   if(command==='/newpermit'){cancelAutoResumeWatch(chatId);state={step:'title_deed'};permitState.set(chatId,state);await sendMessage(chatId,'New Permit Request\n\nPlease upload the Title Deed as PDF or a clear image. I will extract Community → Area, Plot No → Land No, Building Name, and Property No → Unit No.');return;}
   if(command==='/testlogin'){await runLoginTest(chatId,state);return;}
@@ -269,6 +322,11 @@ async function handleUpdate(update){
     await sendMessage(chatId,resultMessage(result));await maybePrepareListing(chatId,state,result);
     if(MANUAL_BROWSER_STATES.has(result.status))startAutoResumeWatch(chatId,state);
     return;
+  }
+
+  const aiState=listingAiState.get(chatId);
+  if(aiState&&!raw.startsWith('/')){
+    if(await handleListingAiInput(chatId,raw,aiState))return;
   }
 
   if(state?.step==='purpose'&&/^(rent|sale)$/i.test(raw)){
