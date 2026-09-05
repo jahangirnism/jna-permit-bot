@@ -38,5 +38,28 @@ case'bathrooms':if(!/^\\d+$/.test(v)){await sendMessage(chatId,'Bathrooms must b
   'numeric bedroom bathroom validation'
 );
 
+replaceExact(
+  "  const sync=await runBrowserTask('sync_listing_case',{listingRef:state.listingRef,titleDeed:state.titleDeedFile,idCopy:state.idFile},60000);\n  if(sync.status!=='listing_case_synced')await sendMessage(chatId,`CRM listing created, but the office case folder could not be confirmed: ${sync.message||sync.status}`);\n  else await sendMessage(chatId,`Pixxi listing created.\\n\\nJnA Case Reference: ${state.listingRef}${state.pixxiListingRef!==state.listingRef?`\\nPixxi raw reference: ${state.pixxiListingRef}`:''}\\nLocal case folder: Listing/${state.listingRef}/\\nTitle Deed and ID have been saved there.`);\n  await sendMessage(chatId,'Generating the A2/NOC PDF from the same extracted owner/property information…');",
+  `  const sync=await runBrowserTask('sync_listing_case',{listingRef:state.listingRef,titleDeed:state.titleDeedFile,idCopy:state.idFile},60000).catch(error=>({status:'agent_error',message:error.message}));
+  if(sync.status!=='listing_case_synced')await sendMessage(chatId,\`CRM listing created, but the office case folder could not be confirmed: \${sync.message||sync.status}\`);
+  else await sendMessage(chatId,\`Pixxi listing created.\\n\\nJnA Case Reference: \${state.listingRef}\${state.pixxiListingRef!==state.listingRef?\`\\nPixxi raw reference: \${state.pixxiListingRef}\`:''}\\nLocal case folder: Listing/\${state.listingRef}/\\nTitle Deed and ID have been saved there.\`);
+
+  await sendMessage(chatId,'Creating MKTG.png from the exact CRM listing data and saving it in the case folder…');
+  const mktg=await runBrowserTask('generate_mktg_image',{listingRef:state.listingRef,listing:{
+    listingType:state.listingType,title:state.generated?.title||'',description:state.generated?.description||'',
+    building:state.building,area:state.area,propertyType:state.crmHouseType,unitNo:state.unitNo,
+    price:state.price,size:state.size,bedrooms:state.bedrooms,bathrooms:state.bathrooms,
+    furnishing:state.furnishing,view:state.view
+  }},90000).catch(error=>({status:'agent_error',message:error.message}));
+  if(mktg.status==='mktg_saved'){
+    state.mktgPath=mktg.path;state.mktgSaved=true;await saveListingCaseState(chatId,state);
+    await sendMessage(chatId,\`MKTG.png saved successfully.\\n\\nListing/\${state.listingRef}/MKTG.png\\n\\nThis file is retained for the Trakheesi Copy of Advertisement Format upload.\`);
+  }else{
+    await sendMessage(chatId,\`CRM listing is safe, but MKTG.png could not be saved yet: \${mktg.message||mktg.status}. The listing case remains stored and MKTG can be retried when the office agent is online.\`);
+  }
+  await sendMessage(chatId,'Generating the A2/NOC PDF from the same extracted owner/property information…');`,
+  'post-CRM MKTG generation'
+);
+
 await fs.writeFile(runtimePath,source,'utf8');
 await import(`./.index-v2-runtime.mjs?ts=${Date.now()}`);
