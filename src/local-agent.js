@@ -7,6 +7,8 @@ import { testDldLogin, continueAfterCaptcha, continueUaePassLogin, checkUaePassS
 const base=(process.env.COORDINATOR_URL||'').replace(/\/$/,'');
 const secret=process.env.AGENT_SHARED_SECRET||'';
 const MAX_DLD_FILE=1024*1024;
+const LOCAL_ROOT=process.env.JNA_LOCAL_DATA_DIR||path.join(os.homedir(),'.jna-permit-bot');
+const CURRENT_PERMIT_PATH=process.env.JNA_CURRENT_PERMIT_PATH||path.join(LOCAL_ROOT,'current-permit.json');
 if(!base||!secret){console.error('Missing COORDINATOR_URL or AGENT_SHARED_SECRET');process.exit(1);}
 
 async function api(pathname,options={}){
@@ -18,6 +20,9 @@ async function api(pathname,options={}){
 function fileExt(name=''){return path.extname(name).toLowerCase().replace('.','');}
 function allowed(kind,ext){return kind==='marketing'?['jpeg','jpg','bmp','gif','png','pdf'].includes(ext):['jpeg','jpg','bmp','png'].includes(ext);}
 function mimeFromExt(ext){if(ext==='png')return'image/png';if(ext==='gif')return'image/gif';if(ext==='bmp')return'image/bmp';if(ext==='webp')return'image/webp';return'image/jpeg';}
+function validPermitContext(p){return !!(p&&['RENT','SALE'].includes(p.purpose)&&p.propertyType==='UNIT'&&p.deed?.area&&p.deed?.landNo&&p.deed?.buildingName&&p.deed?.unitNo);}
+async function savePermitContext(payload){if(!validPermitContext(payload))return false;await fs.mkdir(LOCAL_ROOT,{recursive:true});await fs.writeFile(CURRENT_PERMIT_PATH,JSON.stringify({purpose:payload.purpose,propertyType:payload.propertyType,deed:payload.deed,updatedAt:new Date().toISOString()},null,2));return true;}
+async function loadPermitContext(){try{const p=JSON.parse(await fs.readFile(CURRENT_PERMIT_PATH,'utf8'));return validPermitContext(p)?p:null;}catch{return null;}}
 
 async function convertImageWithChrome(file,kind){
   const input=Buffer.from(file.base64,'base64');
@@ -30,16 +35,12 @@ async function convertImageWithChrome(file,kind){
       const src=`data:${mime};base64,${base64}`;
       const img=new Image();
       await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new Error('Image format could not be decoded'));img.src=src;});
-      let scale=1;
-      let quality=.88;
+      let scale=1,quality=.88;
       for(let attempt=0;attempt<12;attempt++){
-        const w=Math.max(1,Math.round(img.naturalWidth*scale));
-        const h=Math.max(1,Math.round(img.naturalHeight*scale));
+        const w=Math.max(1,Math.round(img.naturalWidth*scale)),h=Math.max(1,Math.round(img.naturalHeight*scale));
         const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
         canvas.getContext('2d',{alpha:false}).drawImage(img,0,0,w,h);
-        const out=canvas.toDataURL('image/jpeg',quality);
-        const b64=out.split(',')[1]||'';
-        const bytes=Math.floor(b64.length*3/4);
+        const out=canvas.toDataURL('image/jpeg',quality),b64=out.split(',')[1]||'',bytes=Math.floor(b64.length*3/4);
         if(bytes<=maxBytes)return{base64:b64,size:bytes};
         if(quality>.55)quality-=.08;else scale*=.82;
       }
@@ -51,8 +52,7 @@ async function convertImageWithChrome(file,kind){
 
 async function normalizeDldFile(file,kind){
   if(!file?.base64||!file?.name)throw new Error(`Missing ${kind} file data`);
-  const ext=fileExt(file.name);
-  const size=file.size||Buffer.byteLength(file.base64,'base64');
+  const ext=fileExt(file.name),size=file.size||Buffer.byteLength(file.base64,'base64');
   if(allowed(kind,ext)&&size<=MAX_DLD_FILE)return{...file,size};
   if(ext==='pdf'){
     if(kind==='marketing'&&size<=MAX_DLD_FILE)return{...file,size};
@@ -69,52 +69,74 @@ async function materialize(file,label){
   return target;
 }
 
-const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found','unit_tab_not_found','unit_tab_not_ready']);
-async function prepareListingWithRetry(payload){let result;for(let attempt=1;attempt<=4;attempt++){result=await prepareSecondaryListing(payload);if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;console.log(`Transient Trakheesi state ${result.status}; retrying prepare flow (${attempt}/4)`);if(attempt<4)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));}return result;}
+const TRANSIENT_LISTING_STATES=new Set(['listing_type_property_not_found','listing_purpose_not_found','listing_proceed_not_found','area_option_not_found','unit_tab_not_found','unit_tab_not_ready','wrong_permit_edit_page']);
+async function prepareListingWithRetry(payload){
+  if(validPermitContext(payload))await savePermitContext(payload).catch(e=>console.error('Could not persist permit context:',e.message));
+  let result;
+  for(let attempt=1;attempt<=4;attempt++){
+    result=await prepareSecondaryListing(payload);
+    if(!TRANSIENT_LISTING_STATES.has(result?.status))return result;
+    console.log(`Transient Trakheesi state ${result.status}; re-inspecting current page (${attempt}/4)`);
+    if(attempt<4)await new Promise(r=>setTimeout(r,result.status==='area_option_not_found'?2500:1800));
+  }
+  return result;
+}
 
+const MANUAL_STATES=new Set(['login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout']);
 const SELF_HEAL_STATES=new Set(['login_form_not_found','post_login_unknown','trakheesi_not_found','trakheesi_session_required','continue_error']);
-async function resumeWorkflowState(){
+async function resumeWorkflowState(taskPayload={}){
+  const supplied=taskPayload?.workflow;
+  if(validPermitContext(supplied))await savePermitContext(supplied).catch(()=>{});
+  const contextPayload=validPermitContext(supplied)?supplied:await loadPermitContext();
+
   let listing=await inspectSecondaryListingState();
   if(listing?.status==='listing_value_ready')return listing;
 
   let last=listing;
-  for(let attempt=1;attempt<=4;attempt++){
+  for(let attempt=1;attempt<=5;attempt++){
     let general=await testDldLogin();
     last=general||last;
 
-    // Known stable states: hand them back to Telegram immediately.
-    if(['session_active','real_estate_admin_profile_selected','login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout'].includes(general?.status))return general;
+    if(MANUAL_STATES.has(general?.status))return general;
 
-    // If DLD says the login form is "not found", do not assume failure. This commonly
-    // means the user is already authenticated and the SPA/dashboard has not been interpreted yet.
-    // Re-inspect the current page and let the existing safe continuation logic find
-    // DLD Dashboard -> Trakheesi -> Go to Account -> current Trakheesi state.
+    if(['session_active','real_estate_admin_profile_selected'].includes(general?.status)){
+      if(contextPayload){
+        const resumed=await prepareListingWithRetry(contextPayload);
+        if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};
+      }
+      return{...general,needsPermitContext:true};
+    }
+
     if(SELF_HEAL_STATES.has(general?.status)){
       await new Promise(r=>setTimeout(r,1200));
       const continued=await continueAfterCaptcha();
       last=continued||last;
-      if(['session_active','real_estate_admin_profile_selected','login_form','captcha_required','authentication_code','uae_pass','uae_pass_approval_required','uae_pass_approval_timeout'].includes(continued?.status))return continued;
+      if(MANUAL_STATES.has(continued?.status))return continued;
+      if(['session_active','real_estate_admin_profile_selected'].includes(continued?.status)){
+        if(contextPayload){
+          const resumed=await prepareListingWithRetry(contextPayload);
+          if(resumed?.status)return{...resumed,recoveredFrom:'local_permit_context'};
+        }
+        return{...continued,needsPermitContext:true};
+      }
     }
 
     listing=await inspectSecondaryListingState();
     if(listing?.status==='listing_value_ready')return listing;
-
-    if(attempt<4)await new Promise(r=>setTimeout(r,1500));
+    if(attempt<5)await new Promise(r=>setTimeout(r,1500));
   }
   return last||listing||{status:'post_login_unknown'};
 }
 
 async function execute(task){
   switch(task.type){
-    // /testlogin is now state-aware too. It no longer assumes that seeing the login URL
-    // means the user is logged out; it inspects/retries and follows the safe next step.
-    case 'test_login':return resumeWorkflowState();
+    case 'test_login':return resumeWorkflowState(task.payload||{});
     case 'continue':return continueAfterCaptcha();
     case 'uae_pass':return continueUaePassLogin();
     case 'check_uae_pass':return checkUaePassStatus();
     case 'check_ua_pass':return checkUaePassStatus();
     case 'prepare_listing':return prepareListingWithRetry(task.payload||{});
-    case 'resume_listing':return resumeWorkflowState();
+    case 'resume_listing':return resumeWorkflowState(task.payload||{});
     case 'finalize_listing':{
       let marketingPath,advertPath;
       try{
